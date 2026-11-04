@@ -1,0 +1,76 @@
+name: Build and publish Linux release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check release tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, tomllib
+          with open('Cargo.toml', 'rb') as f:
+              expected = 'v' + tomllib.load(f)['package']['version']
+          actual = os.environ['RELEASE_TAG']
+          if actual != expected:
+              raise SystemExit(f'release tag {actual!r} does not match Cargo.toml version {expected!r}')
+          PY
+      - name: Restore Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: target/release-build-cache
+          key: release-linux-x86_64-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/Dockerfile.build', 'scripts/patch-rapidgzip.sh') }}
+      - name: Build release
+        run: |
+          docker build -f scripts/Dockerfile.build -t rust-hic-build .
+          docker run --rm --user "$(id -u):$(id -g)" -e RUST_HIC_TEST_RELEASE=1 \
+            -v "$PWD:/src" -w /src rust-hic-build \
+            scripts/build-linux.sh /src/release-linux
+      - name: Test executable and package release files
+        run: |
+          release-linux/rust-hic --help
+          release-linux/rust-hic index tests/data/R1.fastq.gz tests/data/R2.fastq.gz \
+            --chunks 3 --threads-per-mate 1 --output "$RUNNER_TEMP/fastq-index"
+          test -s "$RUNNER_TEMP/fastq-index/manifest.json"
+          RUST_HIC_BIN="$PWD/release-linux/rust-hic" python3 tests/test_preflight.py
+          RUST_HIC_BIN="$PWD/release-linux/rust-hic" python3 tests/test_example_config.py
+          cp release-linux/rust-hic rust-hic-linux-x86_64
+          tar -C release-linux -czf rust-hic-linux-x86_64.tar.gz .
+          sha256sum rust-hic-linux-x86_64 rust-hic-linux-x86_64.tar.gz LICENSE > SHA256SUMS
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-hic-linux-x86_64
+          path: |
+            rust-hic-linux-x86_64
+            rust-hic-linux-x86_64.tar.gz
+            LICENSE
+            SHA256SUMS
+          if-no-files-found: error
+      - name: Publish GitHub release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_flags=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then release_flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
+            "${release_flags[@]}" rust-hic-linux-x86_64 rust-hic-linux-x86_64.tar.gz LICENSE SHA256SUMS

@@ -1,0 +1,4 @@
+## pairs format v1.0.0
+#columns: readID chrom1 pos1 chrom2 pos2 strand1 strand2 pair_type
+duplicate_trans	chr1	20	chr2	30	+	+	UU
+retained_cis	chr1	1	chr1	11	+	-	UU

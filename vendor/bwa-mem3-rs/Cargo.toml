@@ -1,0 +1,13 @@
+[package]
+name = "bwa-mem3-rs"
+version = "0.4.4"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+[features]
+default = []
+debug-poison = ["bwa-mem3-sys/debug-poison"]
+[dependencies]
+bwa-mem3-sys = "=0.4.4"
+thiserror = "1"
+libc = "0.2"

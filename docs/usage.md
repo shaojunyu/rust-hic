@@ -1,0 +1,350 @@
+# Usage
+
+`rust-hic run CONFIG.yaml` indexes paired gzip FASTQs, aligns chunks, sorts,
+merges, filters and deduplicates contacts, and produces a multi-resolution
+`.mcool` file. FASTQ alignment supports built-in BWA-MEM3 and external
+Chromap, BWA-MEM or BWA-MEM2 executables.
+As each FASTQ chunk finishes mapping, `run` starts its sorting and optional
+restriction filtering while other chunks continue mapping. It then merges
+all chunks and deduplicates globally, so duplicates spanning chunks are found.
+Mapping and chunk preparation can run at the same time; their configured
+thread and job counts are not a shared CPU limit.
+The pipeline is experimental and does not produce the complete runHiC statistics cache.
+
+Download the Linux executable as described in the [README](../README.md). The
+examples below assume it is named `rust-hic` in the current directory. See
+[building from source](building.md) for development and release builds.
+
+## Configure and run
+
+Create a complete example configuration, then edit the input paths and settings:
+
+```sh
+./rust-hic example-config > config.yaml
+```
+
+The same annotated file is available as [example.config.yaml](example.config.yaml).
+The example uses FASTQ input and a restriction fragment BED; it also documents
+alternatives for pairs input and automatic Arima digestion. Relative paths are
+resolved against the YAML file's directory. Run
+`./rust-hic run config.yaml --check` before starting the pipeline. This
+checks settings, inputs, available aligner and index files, and whether the
+output parent and scratch directories can create temporary files. It reads the
+chromosome sizes and fragment BED, checks pairs headers and gzip signatures,
+and verifies fingerprints and boundary IDs when reusing a FASTQ index. It does
+not fully validate FASTQ or pairs records, verify all reference-index contents,
+or guarantee sufficient disk space. The check does not create the result directory.
+
+The main FASTQ options are:
+
+| Setting | Default | Purpose |
+| --- | ---: | --- |
+| `fastq.aligner` | `bwa-mem3` | Built-in `bwa-mem3` or external `chromap`, `bwa-mem`, `bwa-mem2`. |
+| `fastq.chunks` | automatic | Explicit chunk count; otherwise use `chunk_size_bytes`. |
+| `fastq.chunk_size_bytes` | 2147483648 | Target size in compressed bytes for estimating chunk count. |
+| `fastq.index_threads_per_mate` | 8 | Indexing threads for each of R1 and R2. |
+| `fastq.index_search_mib` | 128 | Maximum R2 boundary search distance in MiB. |
+| `fastq.jobs` | 4 | Maximum concurrently mapped chunks. |
+| `fastq.threads_per_job` | 8 | Aligner threads per chunk. |
+| `fastq.index_dir` | unset | Reuse a previously created FASTQ index. |
+| `fastq.expected_pairs` | unset | Check total pair count after mapping. |
+
+Resource limits are per stage, not a shared process-wide CPU limit. An explicit
+setting in an existing YAML file overrides these defaults.
+
+```sh
+./rust-hic version
+./rust-hic help run
+./rust-hic run config.yaml
+```
+
+## Pipeline outputs
+
+A successful `run` creates these files in `output_dir`:
+
+| File | Contents |
+| --- | --- |
+| `contacts.mcool` | Multi-resolution contact matrix. |
+| `filtered-nodups.pairs` | Sorted, filtered and deduplicated contacts. |
+| `filtered-nodups.pairs.gz` and `.px2` | Optional compressed pairs and pairix index when `compressed_pairs: true`. |
+| `status.json` | Completion status and elapsed time. |
+| `events.jsonl` and stage logs | Progress and diagnostic details. |
+| `work-dir.txt` | Location of retained scratch intermediates. |
+
+## Map FASTQ chunks
+
+To map an existing FASTQ index to one pairs file without running the rest of
+the pipeline:
+
+```sh
+./rust-hic map fastq-index \
+  -r reference.fa -x reference.fa \
+  --jobs 4 --threads-per-job 8 -o mapped.pairs
+```
+
+`map` reads the paired FASTQ paths from the index manifest and checks that the
+inputs still match. The reference FASTA and aligner index must already exist;
+external aligners must also be installed. For BWA, `-x` is the prefix used to
+build its index. Each selected chunk is first mapped to a temporary pairs
+file. After all chunks succeed, their records are combined in chunk order
+into the file specified by `-o`, with one header. The output is uncompressed
+and unsorted, before filtering or deduplication. `clean` can sort and deduplicate
+the combined output. Existing output files are never overwritten; failed
+runs retain temporary files and logs for inspection.
+Pass extra aligner options with e.g. `--aligner-arg "-k 19 -T 30"`;
+the argument string is split using shell-style quoting without invoking a shell.
+The option may be repeated, and options for program-managed inputs, outputs,
+or threads are rejected. In a `run` configuration, use `fastq.aligner_args`
+as a YAML list of individual arguments.
+Use `--chunk N` to map only one chunk, numbered from 0 (for example,
+`--chunk 0` selects the first chunk). Without it, all chunks are mapped.
+Run `rust-hic map --help` for options.
+
+## Clean pairs
+
+Use `clean` to sort and merge pairs files, apply optional restriction-fragment
+filtering, and remove duplicate contacts across all inputs:
+
+```sh
+./rust-hic clean sample.pairs \
+  --chromsizes hg38.chrom.sizes --fragments hg38.fragments.bed \
+  --assembly hg38 --threads 4 -o sample.clean.pairs
+```
+
+The output is a sorted, uncompressed pairs file. Without `--fragments`,
+same-fragment filtering is skipped. The output must not already exist; stage
+logs are retained in a temporary workspace only on failure. `--threads` is a
+limit per stage, not a global CPU limit. Run `rust-hic clean --help` for
+options.
+
+Deduplication defaults to `--max-mismatch 3`, matching pairtools 1.1.3's
+default `--method max`: both positions may differ by at most 3 bp, with matching
+chromosomes and strands. Duplicate clusters are transitive within each batch.
+Use `clean --max-mismatch 1` (or `dedup_max_mismatch: 1` in YAML) for runHiC's
+explicit setting. Like pairtools' default scipy backend, batches contain 10,000
+records and carry over up to 100 retained records, so unusually dense clusters
+at batch boundaries can be missed. This change from the previous fixed value of
+1 can remove more contacts from the same data.
+
+Pairs inputs to `run`, `clean` and `matrix` must be uncompressed `.pairs`
+files. `compressed_pairs` creates an additional compressed output for later use
+by other tools; it does not enable compressed input.
+
+Pairs processing supports two column layouts: the standard eight columns
+`readID chrom1 pos1 chrom2 pos2 strand1 strand2 pair_type`, optionally followed
+by `rfrag1 rfrag_start1 rfrag_end1 rfrag2 rfrag_start2 rfrag_end2` (14 columns
+in total). The `#columns:` header and every row must match, and all inputs to a
+merge must use the same headers. Other layouts are rejected rather than
+silently discarding columns. Existing fragment annotations are preserved,
+including when a pair is flipped during sorting. Use `--fragments` only with
+eight-column input; 14-column input already has fragment annotations and must
+not be filtered again with this option. These rules also apply to `run` with
+`input_sorted: true` and to `matrix` input.
+
+## Build a matrix from cleaned pairs
+
+After `clean`, create a multi-resolution `.mcool` from the resulting pairs file:
+
+```sh
+./rust-hic matrix sample.clean.pairs \
+  --chromsizes hg38.chrom.sizes --assembly hg38 --threads 4 -o sample.mcool
+```
+
+`matrix` bins and balances exactly the input records. It does not sort, filter,
+or remove duplicate pairs; use `clean` first. Set `--resolutions` to a
+comma-separated list of bin sizes in bases. Each must be a positive multiple of
+the first, which must be the smallest. Run `rust-hic matrix --help` for
+defaults and options.
+
+The output must not exist. Intermediate files are created next to the output
+and removed after success. If processing fails, the workspace and stage logs
+are retained and their location is printed.
+
+## BWA alignment to pairs conversion
+
+For BWA-MEM and BWA-MEM2, `map` converts the aligner's SAM output to pairs using
+the `5unique` walk policy. These conversion options are not passed to BWA:
+
+- `--min-mapq N`: MAPQ threshold for classifying an alignment as unique
+  (default 1).
+- `--max-molecule-size N`: molecule size threshold in bases for resolving walks
+  (default 750).
+- `--max-inter-align-gap N`: gap threshold in bases when grouping alignments
+  (default 20).
+
+For example, use `--min-mapq 10` to change the pairs conversion threshold; use
+`--aligner-arg "-T 30"` to pass `-T 30` to BWA itself. These conversion options
+do not apply to Chromap, which produces pairs directly. In a `run` configuration,
+set the corresponding `fastq.sam` fields `min_mapq`, `max_molecule_size`, and
+`max_inter_align_gap`.
+
+## Compressed pairs
+
+With `compressed_pairs: true`, the pipeline also writes
+`filtered-nodups.pairs.gz` and its `.px2` pairix index in Rust, using the
+specified `compression_threads` (default 4). Compression reads the retained
+plain pairs after matrix generation, so its time is included in the pipeline
+total and it requires space for both files.
+
+The pairix writer accepts mapped, tab-delimited 8- or 14-column pairs sorted by
+chromosome pair and first position, with coordinates from 1 through 2^30. It
+rejects a repeated chromosome-pair block and unsupported input; failed runs
+can leave partial files.
+
+## Choosing an aligner
+
+The `map` and `run` commands default to the built-in `bwa-mem3` aligner, which
+needs no executable and shares one reference index across concurrent chunks.
+Set `-x` (or `fastq.aligner_index` in YAML) to an existing BWA-MEM2 or BWA-MEM3
+reference index prefix; a BWA-MEM2 index can be reused without rebuilding.
+One thread reads each chunk, and
+`--threads-per-job` threads align batches; structured alignment fields are
+converted directly to pairs. The implementation uses 4096-pair batches and
+BWA `-S -P` Hi-C settings. Differences from BWA-MEM2 may occur. The built-in
+aligner accepts `--aligner-arg` options `-k`, `-w`, `-T`, `-A`, `-B` and `-c`;
+other aligner arguments are rejected. On x86-64 it requires SSE4.2.
+
+For example, map one chunk using the built-in aligner:
+
+```sh
+./rust-hic map fastq-index --chunk 0 --aligner bwa-mem3 \
+  -r reference.fa -x reference.fa --threads-per-job 16 -o mapped.pairs
+```
+
+This creates `mapped.pairs`. The reference index must already exist;
+the built-in aligner does not build it.
+
+For external BWA, set `aligner` to `bwa-mem` or `bwa-mem2`, choose the corresponding
+executable, and set `aligner_index` to the prefix used by `bwa index` or
+`bwa-mem2 index`. All BWA paths use a `5unique`-style walk policy, retaining
+`UU`, `UR` and `RU` pairs. Compared with pairtools 1.1.3, clipping before the
+first alignment does not create a gap, all internal gaps are checked, and a
+walk whose first alignment is unusable falls back to unique-alignment
+selection rather than rescue. These cases can produce different pairs. The SAM
+parser accepts BWA's M/I/D/S/H CIGAR operations; other operations fail
+explicitly. The compatibility checks cover real
+BWA-MEM 0.7.19 and BWA-MEM2 2.2.1 runs on synthetic reads, and randomized and
+targeted SAM comparisons with pairtools 1.1.3. They do not prove equivalence
+for every possible SAM or biological dataset.
+The preflight checks the standard BWA-MEM or BWA-MEM2 2.2.1 index files
+before the FASTQ scan; alternative index layouts are not currently supported.
+
+`aligner_executable` may be omitted when the corresponding `chromap`, `bwa`
+or `bwa-mem2` executable is on `PATH`; an explicit path takes precedence.
+
+For each BWA version, a test using 100,000 real U937_WT read pairs and a
+small synthetic reference built from 2,000 reads per mate produced 4,077
+selected pairs identical to pairtools on the same chunk SAM output. Running
+the aligner once on the unchunked input selected one additional pair in this
+test. Chunking can therefore change alignment results; this experiment does
+not establish biological accuracy or generalize the size of the difference.
+
+## Alternative inputs and resources
+
+To generate Arima fragments in Rust, replace `fragments` with
+`"digest": {"enzyme": "Arima", "reference": "hg38.fa"}`. The FASTA must
+contain all chromosomes in the sizes file at the stated lengths. Arima is the
+only supported automatic digest; provide a precomputed `fragments` BED for
+other enzymes. Omit both `fragments` and `digest` to skip fragment filtering.
+To start from pairs instead,
+replace `fastq` with `"input_pairs": ["a.pairs", "b.pairs"]` and set
+`"input_sorted": true` only for already sorted inputs. The output directory
+must not exist; the scratch directory must exist and have sufficient space.
+Scratch intermediates remain after the run for inspection, including on
+success; the path is recorded in `work-dir.txt`. `status.json` is written only
+on success; logs and partial output may
+remain on failure. The default ten resolutions and 1,000 ICE iterations can
+be changed with `resolutions` (integer multiples of the first value) and
+`balance_max_iterations`. A converged balance is not guaranteed for sparse
+data; inspect each resolution's balancing attributes.
+
+`merge_scratch_dir` is optional and defaults to `scratch_dir`. Its temporary
+space needs can approach the size of the uncompressed merged pairs. `/dev/shm`
+uses memory and may count against a cluster job's memory limit.
+
+To confine merge, filtering, deduplication, statistics, matrix creation and
+optional pair compression to specified Linux CPU IDs, set e.g.
+`"postprocess_cpus": [0, 2, 4, 6, 8, 10]` inside `resources`. The IDs must
+be within the process's current affinity, including any Slurm cpuset; an empty,
+duplicated or unavailable list is rejected. Indexing, alignment and chunk
+sorting keep their own resource settings. CPU IDs are logical CPUs; choose
+physical-core siblings deliberately if that matters for a benchmark.
+
+The base-Cooler converter uses a bounded reader thread to supply batches while
+`matrix_threads` Rayon workers parse and bin records in parallel. The same
+workers sort the resulting runs. The reader is an additional thread; explicit
+`postprocess_cpus` confines it to the chosen CPU set as well.
+
+## FASTQ indexing and reuse
+
+Indexing scans the compressed input to build gzip recovery points but validates
+only boundary read IDs; it does not validate all interior pairs.
+Boundary search assumes correctly paired inputs with unique read IDs and uses
+the first matching R2 ID; it does not detect repeated IDs in the search window.
+Index construction uses rapidgzip; the two mates are indexed concurrently.
+The former experimental `fastq.index_backend` setting has been removed; delete
+it from older YAML configurations.
+The generated indexes retain checkpoints at approximately 64 MiB decoded intervals. During mapping,
+all aligners read and validate mate records in pairs, including their read IDs.
+For BWA, one worker thread per chunk reads both mates with rapidgzip, interleaves the records,
+and streams them to BWA in paired-input mode. A separate thread converts BWA's
+SAM output to pairs. For Chromap, one worker feeds both mate pipes with bounded
+memory, and Chromap writes pairs directly. If Chromap consumes one mate substantially
+ahead of the other, the lagging input is temporarily buffered on disk in the
+mapping workspace. Allow enough free disk for up to one uncompressed mate per
+concurrent chunk. Older
+sparse indexes with gaps over 128 MiB are rejected;
+rebuild them before reuse to avoid excessive memory use. Actual checkpoint
+gaps depend on the gzip block boundaries. `jobs × threads_per_job`
+sets aligner threads alone; FASTQ streaming and SAM conversion also consume CPU,
+so this is not a global CPU limit. Sorting jobs, merge workers and
+matrix threads are separate limits rather than a shared process-tree limit.
+
+To build an index independently and reuse it on later runs:
+
+```sh
+./rust-hic index \
+  data/R1.fastq.gz data/R2.fastq.gz -o new-index-directory \
+  --chunk-size 2GiB
+# Add index_dir: new-index-directory under fastq before run.
+./rust-hic run config.yaml
+```
+
+`index` takes its settings from command-line options; it does not read a
+configuration file and needs no aligner or reference. Paths are relative to the
+current working directory. The output directory may already exist, but index
+output files must not already exist. Run
+`rust-hic index --help` for all options. Indexing progress is shown on the
+terminal and saved to `index.log` in the output directory. During rapidgzip
+scanning, progress reports an estimated percentage, decoded bytes, elapsed time,
+and average speed for each mate. The percentage uses the compression ratio of
+an initial sample and may be inaccurate if the ratio changes; it can be unknown
+if the sample cannot be used. By
+default, chunk count is calculated from the larger compressed FASTQ file and a
+2 GiB target. Boundaries are chosen by uncompressed offsets and aligned on read IDs,
+so actual compressed chunk sizes may vary.
+Use `--chunk-size` with bytes or units such as `GB` and `GiB`, or use `--chunks`
+to specify a count instead. The options are mutually exclusive. The main pipeline
+uses the same 2 GiB default, configurable with `fastq.chunk_size_bytes`; if
+`fastq.chunks` is specified, it takes precedence. When reusing an index, omit
+`fastq.chunks` to use its recorded count, or set it to that count. The run checks the index's input mate paths,
+chunk count, input fingerprints and boundary IDs. Fingerprints cover file
+metadata and file edges, not the complete compressed content. If
+`expected_pairs` is specified, the total is checked after alignment; a newly
+built index does not provide a full pair count. Reusing an index avoids
+rebuilding recovery points; interior paired IDs are validated when each chunk is mapped.
+
+## Errors and retained files
+
+`run --check` reports the failing setting or input path and exits nonzero.
+Fix the reported problem and run it again; it does not reserve space or prevent
+files from changing after the check. A regular `run` performs the same
+preflight automatically. If the pipeline fails after creating its output
+directory, inspect `failure.json`, `events.jsonl`, stage logs, and the scratch
+path in `work-dir.txt`. Scratch is retained even after a successful `run`.
+Choose a new output directory for a retry; existing outputs are not overwritten.
+
+Standalone `map`, `clean`, and `matrix` retain their temporary workspace and
+print its path when processing fails. An existing output file is never replaced.
+The program reports invalid options and missing files before starting work,
+but it cannot predict all later filesystem, aligner, data, or memory failures.

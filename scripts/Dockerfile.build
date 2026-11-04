@@ -1,0 +1,13 @@
+# A recent compiler with the glibc 2.28 release baseline. This image is a
+# build environment, not a runtime dependency of rust-hic.
+FROM rockylinux:8
+RUN dnf -y --enablerepo=powertools install gcc-toolset-15-gcc gcc-toolset-15-gcc-c++ \
+    glibc-static libstdc++-static zlib-static zlib-devel cmake make nasm \
+    binutils curl ca-certificates findutils tar gzip perl-core && dnf clean all
+RUN dnf -y install git && dnf clean all
+ENV PATH=/opt/rh/gcc-toolset-15/root/usr/bin:/opt/rust/cargo/bin:$PATH \
+    CARGO_HOME=/opt/rust/cargo RUSTUP_HOME=/opt/rust/rustup
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --no-modify-path --default-toolchain 1.90.0 --component rustfmt --component clippy
+WORKDIR /src
+CMD ["bash"]

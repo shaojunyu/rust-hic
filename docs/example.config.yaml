@@ -1,0 +1,63 @@
+# Example configuration for `rust-hic run`.
+# Save with `rust-hic example-config > config.yaml`, then edit the paths.
+# Relative paths are resolved against this configuration file's directory.
+
+# Required genome metadata. Chromosome names must match the reference and fragments.
+assembly: hg38
+chromsizes: hg38.chrom.sizes
+
+# Optional: BED of restriction fragments. Omit to skip fragment filtering.
+fragments: hg38.Arima.bed
+# Alternatively, remove `fragments` and generate an Arima digest from FASTA:
+# digest:
+#   enzyme: Arima
+#   reference: hg38.fa
+
+# Choose exactly one input: this FASTQ block OR `input_pairs` below.
+fastq:
+  read1: R1.fastq.gz
+  read2: R2.fastq.gz
+  reference: hg38.fa
+  # Existing reference index prefix; bwa-mem3 can use a bwa-mem2 index.
+  aligner_index: hg38.fa
+  aligner: bwa-mem3  # Also: chromap, bwa-mem, bwa-mem2.
+  # External aligners only; omit to find the executable on PATH.
+  # aligner_executable: /path/to/chromap
+  aligner_args: []  # Individual arguments, e.g. ["-k", "19"].
+  # chunks: 16  # Optional explicit count (1-256); overrides chunk_size_bytes.
+  chunk_size_bytes: 2147483648  # Compressed bytes, used to estimate chunk count.
+  jobs: 4  # Concurrent chunks.
+  threads_per_job: 8  # Aligner threads per chunk.
+  index_threads_per_mate: 8
+  index_search_mib: 128
+  # index_dir: existing-fastq-index  # Optional: reuse an existing FASTQ index.
+  # expected_pairs: 1000000  # Optional: check the total after mapping.
+  sam:  # BWA pair conversion options; use defaults with Chromap.
+    min_mapq: 1
+    max_molecule_size: 750
+    max_inter_align_gap: 20
+
+# To start from uncompressed pairs, remove the entire fastq block instead:
+# input_pairs: [sample1.pairs, sample2.pairs]
+input_sorted: false  # Set true only for already-sorted pairs input.
+
+output_dir: new-result  # Must not already exist; its parent must exist.
+scratch_dir: .  # Existing writable directory; intermediates are retained.
+# merge_scratch_dir: /path/to/existing/scratch  # Defaults to scratch_dir.
+compressed_pairs: false  # Also produce a compressed pairs file and pairix index.
+dedup_max_mismatch: 3  # pairtools default; use 1 for runHiC's setting.
+
+# Limits are per stage, not a single process-wide CPU limit.
+resources:
+  merge_workers: 6
+  dedup_workers: 6
+  matrix_threads: 6
+  sort_jobs: 4
+  sort_threads: 2
+  compression_threads: 4
+  sort_run_mib: 256
+  # postprocess_cpus: [0, 1, 2, 3]  # Must be allowed by process affinity.
+
+# Positive, unique bin sizes in bp; all must be multiples of the first.
+resolutions: [5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000, 2500000, 5000000]
+balance_max_iterations: 1000

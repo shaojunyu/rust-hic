@@ -1,0 +1,37 @@
+[package]
+name = "rust-hic"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT"
+autobins = false
+
+[[bin]]
+name = "rust-hic"
+path = "src/main.rs"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[dependencies]
+anyhow = "1"
+bwa-mem3-rs = { path = "vendor/bwa-mem3-rs" }
+bwa-mem3-sys = { version = "=0.4.4", features = ["sse42"] }
+clap = { version = "4.5", features = ["derive"] }
+crc32fast = "1"
+crossbeam-channel = "0.5"
+flate2 = "1"
+hdf5 = { version = "0.12", package = "hdf5-metno", features = ["static", "zlib"] }
+hdf5-sys = { version = "0.12.5", package = "hdf5-metno-sys" }
+libc = "0.2"
+mimalloc = "0.1"
+rapidgzip-sys = "=1.2.1"
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+shlex = "2"
+tempfile = "3"

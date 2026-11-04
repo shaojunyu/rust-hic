@@ -1,0 +1,14 @@
+/tmp/
+/vendor/*
+!/vendor/bwa-mem3-rs/
+/envs/
+/cache/
+/reference/
+/target/
+/reports/
+/environment-linux-64.lock
+__pycache__/
+*.pyc
+.env
+.env.*
+/release-linux/
