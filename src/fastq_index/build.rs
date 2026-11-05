@@ -37,12 +37,10 @@ fn estimate_decoded_size(input: &Path) -> Option<u64> {
     const SAMPLE_STEP: u64 = 8 * 1024 * 1024;
     const MAX_DECODED: u64 = 256 * 1024 * 1024;
     fn sample(input: &Path, bytes: u64) -> Option<u64> {
-        let mut source = File::open(input).ok()?.take(bytes);
-        let mut prefix = tempfile::NamedTempFile::new().ok()?;
-        if io::copy(&mut source, &mut prefix).ok()? != bytes {
-            return None;
-        }
-        let mut reader = rapidgzip::RapidgzipReader::open(prefix.path(), 1).ok()?;
+        // rapidgzip may abort the process on a deliberately truncated gzip
+        // stream. Use a decoder that returns an error at the sample boundary.
+        let source = File::open(input).ok()?.take(bytes);
+        let mut reader = flate2::read::MultiGzDecoder::new(source);
         let mut decoded = 0u64;
         let mut buffer = vec![0u8; 1024 * 1024];
         while let Ok(n) = reader.read(&mut buffer) {
