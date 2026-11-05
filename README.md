@@ -10,12 +10,11 @@ supports external Chromap, BWA-MEM and BWA-MEM2. The pipeline is experimental.
 
 ## Download and run
 
-Download `rust-hic-linux-x86_64` from the latest [GitHub Release](../../releases/latest),
-make it executable, and run it:
+Download and extract the latest release:
 
 ```sh
-chmod +x rust-hic-linux-x86_64
-mv rust-hic-linux-x86_64 rust-hic
+curl -fL -o rust-hic-linux-x86_64.tar.gz https://github.com/shaojunyu/rust-hic/releases/latest/download/rust-hic-linux-x86_64.tar.gz
+tar -xzf rust-hic-linux-x86_64.tar.gz
 ./rust-hic --help
 ./rust-hic example-config > config.yaml
 # Edit config.yaml to point to your input files and output directory.
@@ -24,8 +23,8 @@ mv rust-hic-linux-x86_64 rust-hic
 ```
 
 The release executable targets x86-64 Linux; its built-in BWA-MEM3 requires
-SSE4.2. External aligners must be installed separately. Download the release
-archive for bundled license notices and documentation.
+SSE4.2. External aligners must be installed separately. The archive also contains
+license notices and documentation.
 
 - [Usage, configuration and commands](docs/usage.md)
 - [Building from source and development](docs/building.md)

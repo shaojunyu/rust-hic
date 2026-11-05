@@ -56,7 +56,7 @@ if readelf -l "$binary" | grep -q INTERP || readelf -d "$binary" | grep -q NEEDE
     exit 1
 fi
 mkdir -p "$out/licenses"
-cp "$binary" "$out/rust-hic"
+install -m 755 "$binary" "$out/rust-hic"
 for pkg in glibc libgcc zlib; do
     if [[ -d /usr/share/licenses/$pkg ]]; then cp -r "/usr/share/licenses/$pkg" "$out/licenses/"; fi
 done

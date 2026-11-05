@@ -56,8 +56,8 @@ below.
 executable in the repository's Rocky Linux 8 / GCC 15 Docker environment. A
 manual workflow run builds and uploads an Actions artifact without publishing.
 Pushing a version tag such as `v0.1.0` builds, runs Rust unit tests and
-smoke-tests the binary, then creates a GitHub Release with the direct executable, an archive containing
-licenses and documentation, the project `LICENSE`, and `SHA256SUMS`. The tag must match the version in
+smoke-tests the binary, then creates a GitHub Release with one archive containing
+the executable, licenses and documentation. The tag must match the version in
 `Cargo.toml`; tags with a prerelease suffix create prereleases. The workflow
 needs Actions enabled and repository permission to write release contents.
 

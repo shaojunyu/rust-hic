@@ -52,18 +52,16 @@ jobs:
           test -s "$RUNNER_TEMP/fastq-index/manifest.json"
           RUST_HIC_BIN="$PWD/release-linux/rust-hic" python3 tests/test_preflight.py
           RUST_HIC_BIN="$PWD/release-linux/rust-hic" python3 tests/test_example_config.py
-          cp release-linux/rust-hic rust-hic-linux-x86_64
           tar -C release-linux -czf rust-hic-linux-x86_64.tar.gz .
-          sha256sum rust-hic-linux-x86_64 rust-hic-linux-x86_64.tar.gz LICENSE > SHA256SUMS
+          mkdir "$RUNNER_TEMP/release-extract"
+          tar -xzf rust-hic-linux-x86_64.tar.gz -C "$RUNNER_TEMP/release-extract"
+          test -x "$RUNNER_TEMP/release-extract/rust-hic"
+          "$RUNNER_TEMP/release-extract/rust-hic" --version
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: rust-hic-linux-x86_64
-          path: |
-            rust-hic-linux-x86_64
-            rust-hic-linux-x86_64.tar.gz
-            LICENSE
-            SHA256SUMS
+          path: rust-hic-linux-x86_64.tar.gz
           if-no-files-found: error
       - name: Publish GitHub release
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
@@ -73,4 +71,4 @@ jobs:
           release_flags=()
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then release_flags+=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
-            "${release_flags[@]}" rust-hic-linux-x86_64 rust-hic-linux-x86_64.tar.gz LICENSE SHA256SUMS
+            "${release_flags[@]}" rust-hic-linux-x86_64.tar.gz
