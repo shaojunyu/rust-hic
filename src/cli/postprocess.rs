@@ -112,6 +112,8 @@ fn run(
             scratch_dir: workspace.path().to_path_buf(),
             merge_scratch_dir: None,
             compressed_pairs: false,
+            keep_pairs: true,
+            keep_bam: false,
             dedup_max_mismatch: max_mismatch,
             resources,
             resolutions,

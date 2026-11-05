@@ -71,6 +71,10 @@ pub(crate) struct Config {
     pub(crate) merge_scratch_dir: Option<PathBuf>,
     #[serde(default)]
     pub(crate) compressed_pairs: bool,
+    #[serde(default)]
+    pub(crate) keep_pairs: bool,
+    #[serde(default)]
+    pub(crate) keep_bam: bool,
     #[serde(default = "dedup_max_mismatch")]
     pub(crate) dedup_max_mismatch: i64,
     #[serde(default)]
@@ -120,7 +124,6 @@ mod tests {
             r#"
 assembly: hg38
 chromsizes: hg38.chrom.sizes
-fragments: hg38.Arima.bed
 fastq:
   read1: R1.fastq.gz
   read2: R2.fastq.gz

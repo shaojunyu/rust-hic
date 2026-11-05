@@ -178,6 +178,7 @@ class CoreTests(unittest.TestCase):
             'assembly': 'test', 'chromsizes': str(DATA / 'chrom.sizes'),
             'input_pairs': [str(path) for path in sorted_inputs], 'input_sorted': True,
             'output_dir': str(result_dir), 'scratch_dir': str(self.work),
+            'keep_pairs': True,
             'resolutions': [5000], 'balance_max_iterations': 10,
         }))
         run(BINARY, 'run', config)

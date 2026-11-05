@@ -6,9 +6,10 @@
 assembly: hg38
 chromsizes: hg38.chrom.sizes
 
-# Optional: BED of restriction fragments. Omit to skip fragment filtering.
-fragments: hg38.Arima.bed
-# Alternatively, remove `fragments` and generate an Arima digest from FASTA:
+# Optional: enable same-fragment filtering using an existing BED.
+# Leave both `fragments` and `digest` unset to skip restriction filtering.
+# fragments: hg38.Arima.bed
+# Alternatively, generate an Arima digest from FASTA (not both options):
 # digest:
 #   enzyme: Arima
 #   reference: hg38.fa
@@ -42,9 +43,11 @@ fastq:
 input_sorted: false  # Set true only for already-sorted pairs input.
 
 output_dir: new-result  # Must not already exist; its parent must exist.
-scratch_dir: .  # Existing writable directory; intermediates are retained.
+scratch_dir: .  # Existing writable directory for intermediate files.
 # merge_scratch_dir: /path/to/existing/scratch  # Defaults to scratch_dir.
-compressed_pairs: false  # Also produce a compressed pairs file and pairix index.
+keep_pairs: false  # Retain the final uncompressed pairs file.
+keep_bam: false  # Retain aligner-emitted records in one unsorted BAM.
+compressed_pairs: false  # Retain a compressed pairs file and pairix index.
 dedup_max_mismatch: 3  # pairtools default; use 1 for runHiC's setting.
 
 # Limits are per stage, not a single process-wide CPU limit.

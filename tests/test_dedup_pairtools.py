@@ -64,7 +64,7 @@ class PairtoolsDedup(unittest.TestCase):
             config = tmp / 'run.yaml'
             config.write_text(f'assembly: test\nchromsizes: {sizes}\ninput_pairs:\n'
                               f'  - {source}\noutput_dir: {tmp / "run-result"}\n'
-                              f'scratch_dir: {tmp}\ndedup_max_mismatch: 1\n'
+                              f'scratch_dir: {tmp}\nkeep_pairs: true\ndedup_max_mismatch: 1\n'
                               'resolutions: [10]\nbalance_max_iterations: 1\n')
             result = subprocess.run([str(BIN), 'run', str(config)], capture_output=True,
                                     text=True, timeout=120)

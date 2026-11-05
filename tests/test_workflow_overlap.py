@@ -79,6 +79,7 @@ class WorkflowOverlap(unittest.TestCase):
                 pairs.append(str(path))
             common = {
                 'assembly': 'test', 'chromsizes': str(DATA / 'chrom.sizes'),
+                'keep_pairs': True,
                 'scratch_dir': str(tmp), 'resolutions': [1000], 'balance_max_iterations': 1,
                 'resources': {'sort_jobs': 2, 'sort_threads': 1, 'sort_run_mib': 1,
                               'merge_workers': 2, 'dedup_workers': 2, 'matrix_threads': 2},
@@ -139,6 +140,7 @@ class WorkflowOverlap(unittest.TestCase):
             self.assertEqual(combined.read_bytes(), previous)
             common = {
                 'assembly': 'test', 'chromsizes': str(DATA / 'chrom.sizes'),
+                'keep_pairs': True,
                 'scratch_dir': str(tmp), 'resolutions': [1000], 'balance_max_iterations': 1,
                 'resources': {'sort_jobs': 2, 'sort_threads': 1, 'sort_run_mib': 1,
                               'merge_workers': 2, 'dedup_workers': 2, 'matrix_threads': 2},
@@ -164,6 +166,12 @@ class WorkflowOverlap(unittest.TestCase):
                         self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual((overlap_dir / 'filtered-nodups.pairs').read_bytes(),
                                      (sequential_dir / 'filtered-nodups.pairs').read_bytes())
+                    report = json.loads((overlap_dir / 'report.json').read_text())
+                    self.assertEqual(report['input']['aligner'], 'chromap')
+                    self.assertEqual(report['counts']['input_read_pairs'], 1024)
+                    self.assertEqual(report['counts']['pairs_before_restriction'], 7)
+                    self.assertEqual(report['restriction']['mode'], 'bed' if use_fragments else 'disabled')
+                    self.assertTrue(all(chunk['selected_pairs'] is None for chunk in report['chunks']))
                     if use_fragments:
                         self.assertEqual(json.loads((overlap_dir / 'filter-stats.json').read_text()),
                                          json.loads((sequential_dir / 'filter-stats.json').read_text()))
@@ -206,6 +214,8 @@ class WorkflowOverlap(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('sort chunk 1', result.stderr)
             self.assertTrue((tmp / 'failed' / 'failure.json').is_file())
+            failed_work = Path((tmp / 'failed' / 'work-dir.txt').read_text().strip())
+            self.assertTrue(failed_work.is_dir())
             self.assertFalse((tmp / 'failed' / 'contacts.mcool').exists())
 
             bad_bed = tmp / 'incomplete.bed'

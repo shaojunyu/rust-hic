@@ -17,6 +17,17 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// Print a complete example YAML configuration to standard output.
     ExampleConfig,
+    /// Generate an HTML and JSON report from a completed run.
+    Report {
+        /// Directory containing a completed run.
+        result_dir: PathBuf,
+        /// Existing output directory; defaults to the run directory.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Re-read final pairs to calculate detailed contact distributions.
+        #[arg(long)]
+        recompute_contact_stats: bool,
+    },
     /// Run the pipeline from a YAML configuration.
     #[command(
         after_help = "Create a complete example with: rust-hic example-config > config.yaml"
@@ -27,6 +38,12 @@ pub(crate) enum Command {
         /// Check inputs and configuration without running the pipeline.
         #[arg(long)]
         check: bool,
+        /// Retain the final sorted, filtered and deduplicated pairs file.
+        #[arg(long)]
+        keep_pairs: bool,
+        /// Retain all aligner-emitted records in one unsorted BAM file.
+        #[arg(long)]
+        keep_bam: bool,
     },
     /// Build an index for paired gzip FASTQ files.
     #[command(

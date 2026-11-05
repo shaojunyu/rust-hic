@@ -7,6 +7,7 @@
 `rust-hic` processes paired Hi-C FASTQ reads or pairs files into cleaned
 contacts and a multi-resolution `.mcool` matrix. It includes BWA-MEM3 and also
 supports external Chromap, BWA-MEM and BWA-MEM2. The pipeline is experimental.
+Development builds include an offline HTML report and machine-readable statistics.
 
 ## Download and run
 
@@ -25,6 +26,10 @@ tar -xzf rust-hic-linux-x86_64.tar.gz
 The release executable targets x86-64 Linux; its built-in BWA-MEM3 requires
 SSE4.2. External aligners must be installed separately. The archive also contains
 license notices and documentation.
+
+Restriction-fragment filtering is optional and disabled in the example by
+default. See [restriction-fragment filtering](docs/usage.md#restriction-fragment-filtering)
+before enabling it for your experiment.
 
 - [Usage, configuration and commands](docs/usage.md)
 - [Building from source and development](docs/building.md)

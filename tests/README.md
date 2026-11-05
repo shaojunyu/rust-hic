@@ -35,14 +35,20 @@ python3 tests/test_chromap_pairing.py
 `tests/test_stage_processes.py` checks nested sorting and merging processes
 using multiple temporary runs and parallel merge ranges.
 
-`tests/test_example_config.py` checks the embedded example and runs it with
-pairs plus Arima digestion and with built-in BWA-MEM3 FASTQ input. The latter
-case requires `bwa-mem2` to build the test reference index and is skipped if
-it is unavailable.
+`tests/test_example_config.py` checks the embedded example and reports, and runs
+it with pairs plus Arima digestion, without restriction filtering, and with
+built-in BWA-MEM3 FASTQ input. It checks report regeneration and detailed
+statistics for older outputs. The BWA-MEM3 case requires `bwa-mem2` to build
+the test reference index and is skipped if it is unavailable.
 
 `tests/test_workflow_overlap.py` checks that chunk sorting and restriction
 filtering overlap mapping, match sequential processing and keep deduplication
 global. It also checks that a failed chunk stops the workflow.
+
+`tests/test_bam_retention.py` checks optional unsorted BAM retention for
+BWA-MEM3, BWA-MEM2 and Chromap across concurrent chunks, compares pairs and
+matrix outputs, and checks Chromap's emitted SAM records against the BAM. It
+requires `bwa-mem2`, `chromap` and `samtools`.
 
 `data/` contains two 25 kb chromosomes, 1,024 paired reads (including four
 unmapped pairs), chromosome sizes, restriction fragments, and two pairs files

@@ -126,6 +126,9 @@ pub(super) fn prepare(mut c: Config, base: &Path, pairs_only: bool) -> Result<Co
     if c.fastq.is_some() && c.input_sorted {
         bail!("FASTQ input cannot already be sorted");
     }
+    if c.keep_bam && c.fastq.is_none() {
+        bail!("keep_bam requires FASTQ input; pairs files do not contain the original alignments");
+    }
     if c.fragments.is_some() && c.digest.is_some() {
         bail!("specify fragments or digest, not both");
     }

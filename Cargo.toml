@@ -27,6 +27,9 @@ hdf5 = { version = "0.12", package = "hdf5-metno", features = ["static", "zlib"]
 hdf5-sys = { version = "0.12.5", package = "hdf5-metno-sys" }
 libc = "0.2"
 mimalloc = "0.1"
+noodles-bam = "=0.95.0"
+noodles-bgzf = "=0.51.0"
+noodles-sam = "=0.90.0"
 rapidgzip-sys = "=1.2.1"
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }

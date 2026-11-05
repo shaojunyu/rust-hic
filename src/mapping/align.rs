@@ -188,10 +188,20 @@ pub fn map(
     chunk: Option<usize>,
 ) -> Result<Vec<PathBuf>> {
     let cancelled = AtomicBool::new(false);
-    map_with_completed(c, index, work, logs, chunk, &cancelled, |_, _| Ok(()))
+    map_with_completed(
+        c,
+        index,
+        work,
+        logs,
+        chunk,
+        &cancelled,
+        false,
+        |_, _| Ok(()),
+    )
 }
 
 /// Invoke `completed` as soon as each chunk has been completely written.
+#[allow(clippy::too_many_arguments)] // Mapping context and completion callback.
 pub(crate) fn map_with_completed<F>(
     c: &FastqConfig,
     index: &Path,
@@ -199,6 +209,7 @@ pub(crate) fn map_with_completed<F>(
     logs: &Path,
     chunk: Option<usize>,
     cancelled: &AtomicBool,
+    keep_bam: bool,
     completed: F,
 ) -> Result<Vec<PathBuf>>
 where
@@ -255,6 +266,7 @@ where
                     i,
                     mem3.as_ref().map(|(index, opts)| (index, opts)),
                     cancelled,
+                    keep_bam,
                 ) {
                     Ok((p, n)) => match completed(i, &p) {
                         Ok(()) => output.lock().unwrap().push((i, p, n)),

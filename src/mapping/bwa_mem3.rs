@@ -4,7 +4,7 @@ use crate::fastq_index::{FastqPair, PairedFastqReader};
 use anyhow::{bail, Context, Result};
 use bwa_mem3_rs::{
     AlignScratch, AlignedFields, AlignedFieldsSink, BwaIndex, IdBases, Mate, MemOpts, MemPeStat,
-    ReadPair, RecordOrigin, ResidentCohort,
+    ReadPair, RecordOrigin, RecordSink, ResidentCohort,
 };
 use crossbeam_channel::{bounded, SendTimeoutError};
 use std::{
@@ -91,6 +91,79 @@ struct Batch {
 struct Done {
     data: Vec<u8>,
     counts: sam::Counts,
+    bam_data: Option<Vec<u8>>,
+}
+
+struct Packed<'a> {
+    fields: Fields<'a>,
+    data: Vec<u8>,
+}
+impl RecordSink for Packed<'_> {
+    fn emit(&mut self, origin: RecordOrigin, body: &[u8]) {
+        if self.fields.error.is_some() {
+            return;
+        }
+        let result = (|| -> Result<()> {
+            if body.len() < 32 {
+                bail!("truncated BAM core from bwa-mem3")
+            }
+            let tid = i32::from_le_bytes(body[0..4].try_into()?);
+            let pos = i32::from_le_bytes(body[4..8].try_into()?);
+            let name_len = body[8] as usize;
+            let mapq = body[9];
+            let cigar_len = u16::from_le_bytes(body[12..14].try_into()?) as usize;
+            let flag = u16::from_le_bytes(body[14..16].try_into()?);
+            let start = 32usize
+                .checked_add(name_len)
+                .context("invalid BAM name length")?;
+            let end = start
+                .checked_add(cigar_len * 4)
+                .context("invalid BAM cigar length")?;
+            let cigar_bytes = body.get(start..end).context("truncated BAM cigar")?;
+            let cigar: Vec<u32> = cigar_bytes
+                .chunks_exact(4)
+                .map(|x| u32::from_le_bytes(x.try_into().unwrap()))
+                .collect();
+            let fields = AlignedFields {
+                tid,
+                pos,
+                next_tid: 0,
+                next_pos: 0,
+                tlen: 0,
+                flag,
+                bin: 0,
+                mapq,
+                query_start: 0,
+                query_end: 0,
+                cigar: &cigar,
+                nm: None,
+                md: None,
+                mc: None,
+                mq: None,
+                score: None,
+                sub: None,
+                rg: None,
+                sa: None,
+                pa: None,
+                xa: None,
+                hn: None,
+                meth: None,
+            };
+            let mate = match flag & 0xc0 {
+                0x40 => Mate::R1,
+                0x80 => Mate::R2,
+                _ => bail!("invalid BAM mate flag"),
+            };
+            self.fields.emit(origin, mate, false, fields);
+            self.data
+                .extend_from_slice(&u32::try_from(body.len())?.to_le_bytes());
+            self.data.extend_from_slice(body);
+            Ok(())
+        })();
+        if let Err(e) = result {
+            self.fields.error = Some(e)
+        }
+    }
 }
 fn align_batch(
     index: &BwaIndex,
@@ -98,6 +171,7 @@ fn align_batch(
     scratch: &mut AlignScratch,
     batch: Batch,
     c: &FastqConfig,
+    keep_bam: bool,
 ) -> Result<Done> {
     let cohort = ResidentCohort::new(false)?;
     let mut range = cohort.reserve_pairs(batch.pairs.len())?;
@@ -124,19 +198,40 @@ fn align_batch(
         records: (0..pairs.len()).map(|_| (Vec::new(), Vec::new())).collect(),
         error: None,
     };
-    cohort.pair_emit_fields(
-        index,
-        opts,
-        scratch,
-        &mut range,
-        Some(&pestat),
-        IdBases {
-            first_single_id: 0,
-            first_pair_id: batch.first,
-        },
-        0,
-        &mut sink,
-    )?;
+    let ids = IdBases {
+        first_single_id: 0,
+        first_pair_id: batch.first,
+    };
+    let bam_data = if keep_bam {
+        let mut packed = Packed {
+            fields: sink,
+            data: Vec::new(),
+        };
+        cohort.pair_emit(
+            index,
+            opts,
+            scratch,
+            &mut range,
+            Some(&pestat),
+            ids,
+            0,
+            &mut packed,
+        )?;
+        sink = packed.fields;
+        Some(packed.data)
+    } else {
+        cohort.pair_emit_fields(
+            index,
+            opts,
+            scratch,
+            &mut range,
+            Some(&pestat),
+            ids,
+            0,
+            &mut sink,
+        )?;
+        None
+    };
     if let Some(e) = sink.error {
         return Err(e);
     }
@@ -157,7 +252,11 @@ fn align_batch(
             c.sam.max_inter_align_gap,
         )?;
     }
-    Ok(Done { data: out, counts })
+    Ok(Done {
+        data: out,
+        counts,
+        bam_data,
+    })
 }
 
 #[allow(clippy::too_many_arguments)] // Shared chunk context and preloaded aligner state.
@@ -171,10 +270,19 @@ pub fn align_one(
     index: &Arc<BwaIndex>,
     opts: &Arc<MemOpts>,
     cancelled: &AtomicBool,
+    keep_bam: bool,
 ) -> Result<(PathBuf, u64)> {
     let started = Instant::now();
     let dir = work.join(format!("align-{i:04}"));
     fs::create_dir(&dir)?;
+    let mut bam_writer = if keep_bam {
+        Some(super::bam::create_index_writer(
+            &dir.join("alignments.bam"),
+            index,
+        )?)
+    } else {
+        None
+    };
     let mut writer = BufWriter::with_capacity(1024 * 1024, File::create(&output)?);
     writeln!(writer,"## pairs format v1.0.0\n#columns: readID chrom1 pos1 chrom2 pos2 strand1 strand2 pair_type")?;
     eprintln!("event=chunk_start chunk={i} output={}", output.display());
@@ -247,7 +355,7 @@ pub fn align_one(
                                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
                             };
-                            let result = align_batch(&idx, &opts, &mut scratch, batch, c);
+                            let result = align_batch(&idx, &opts, &mut scratch, batch, c, keep_bam);
                             let failed = result.is_err();
                             if send.send(result).is_err() {
                                 break;
@@ -268,6 +376,18 @@ pub fn align_one(
         while let Ok(result) = done_rx.recv() {
             match result {
                 Ok(done) => {
+                    if let Some(data) = done.bam_data {
+                        if let Err(e) = bam_writer
+                            .as_mut()
+                            .expect("BAM writer")
+                            .get_mut()
+                            .write_all(&data)
+                        {
+                            failure = Some(e.into());
+                            cancel.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
                     if let Err(e) = writer.write_all(&done.data) {
                         failure = Some(e.into());
                         cancel.store(true, Ordering::Relaxed);
@@ -310,6 +430,9 @@ pub fn align_one(
         Ok((input, selected))
     })?;
     writer.flush()?;
+    if let Some(mut writer) = bam_writer {
+        super::bam::finish(&mut writer).context("finish BAM chunk")?;
+    }
     serde_json::to_writer_pretty(
         File::create(logs.join(format!("align-{i:04}-stats.json")))?,
         &serde_json::json!({"chunk":i,"aligner":"bwa-mem3","input_pairs":input,"selected_pairs":selected,"elapsed_seconds":started.elapsed().as_secs_f64()}),

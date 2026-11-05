@@ -33,7 +33,17 @@ fn main() {
             .lock()
             .write_all(include_bytes!("../docs/example.config.yaml"))
             .map_err(Into::into),
-        Some(cli::Command::Run { config, check }) => workflow::run(&config, check),
+        Some(cli::Command::Report {
+            result_dir,
+            output,
+            recompute_contact_stats,
+        }) => workflow::report::regenerate(&result_dir, output.as_deref(), recompute_contact_stats),
+        Some(cli::Command::Run {
+            config,
+            check,
+            keep_pairs,
+            keep_bam,
+        }) => workflow::run(&config, check, keep_pairs, keep_bam),
         Some(cli::Command::Index(args)) => cli::index::run(args),
         Some(cli::Command::Map(args)) => cli::map::run(args),
         Some(cli::Command::Clean(args)) => cli::postprocess::clean(args),

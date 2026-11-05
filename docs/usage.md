@@ -1,5 +1,8 @@
 # Usage
 
+This page describes the development version. The v0.1.0 release predates the
+run report and the `--keep-bam` and `--keep-pairs` options described below.
+
 `rust-hic run CONFIG.yaml` indexes paired gzip FASTQs, aligns chunks, sorts,
 merges, filters and deduplicates contacts, and produces a multi-resolution
 `.mcool` file. FASTQ alignment supports built-in BWA-MEM3 and external
@@ -24,8 +27,8 @@ Create a complete example configuration, then edit the input paths and settings:
 ```
 
 The same annotated file is available as [example.config.yaml](example.config.yaml).
-The example uses FASTQ input and a restriction fragment BED; it also documents
-alternatives for pairs input and automatic Arima digestion. Relative paths are
+The example uses FASTQ input and leaves restriction-fragment filtering disabled;
+it also documents alternatives for pairs input and optional fragment filtering. Relative paths are
 resolved against the YAML file's directory. Run
 `./rust-hic run config.yaml --check` before starting the pipeline. This
 checks settings, inputs, available aligner and index files, and whether the
@@ -65,11 +68,54 @@ A successful `run` creates these files in `output_dir`:
 | File | Contents |
 | --- | --- |
 | `contacts.mcool` | Multi-resolution contact matrix. |
-| `filtered-nodups.pairs` | Sorted, filtered and deduplicated contacts. |
+| `filtered-nodups.pairs` | Sorted, filtered and deduplicated contacts, when `--keep-pairs` or `keep_pairs: true` is set. |
+| `alignments.bam` | Aligner-emitted records in one unsorted BAM, when `--keep-bam` or `keep_bam: true` is set. |
 | `filtered-nodups.pairs.gz` and `.px2` | Optional compressed pairs and pairix index when `compressed_pairs: true`. |
 | `status.json` | Completion status and elapsed time. |
 | `events.jsonl` and stage logs | Progress and diagnostic details. |
-| `work-dir.txt` | Location of retained scratch intermediates. |
+| `report.html` | Offline, formatted run report. |
+| `report.json` | Machine-readable report with counts, timings and matrix balance status. |
+
+By default, neither BAM nor uncompressed pairs are retained. For example,
+`rust-hic run config.yaml --keep-bam --keep-pairs` retains both. BAM contains
+the records emitted by the aligner, before pairs filtering and deduplication;
+it is not coordinate sorted and has no index. Chromap itself may omit reads
+from its SAM output. Because Chromap emits either pairs or SAM, retaining its
+BAM runs a second alignment pass and adds substantial time and I/O. With BAM
+disabled, no BAM file or BAM output stream is created. `--keep-bam` requires
+FASTQ input.
+
+## Run report
+
+Open `report.html` in a web browser after a successful `run`. It is self-contained
+and does not need an internet connection. It summarizes input read-pair counts
+when available, contacts after each processing stage, duplicates, cis/trans and
+distance distributions, strand and pair-type composition, matrix balance
+status at each resolution, chunk details, and stage timings. Percentages name
+their denominator. Counts after aligner selection are not necessarily a mapping
+rate, and duplicates removed inside an aligner are not included in the pipeline
+deduplication count. Alignment and chunk preparation overlap in time.
+
+`report.json` contains the same statistics for downstream tools. Missing or
+unavailable values are `null`, not zero. A resolution with no usable balance
+weights is reported separately from converged or non-converged resolutions.
+The report summarizes observable results; it does not assign a pass/fail
+quality grade or establish biological validity.
+
+To generate a report for an earlier successful run, choose an existing empty
+directory for the two report files:
+
+```sh
+mkdir report-output
+./rust-hic report existing-result --output report-output
+```
+
+Older runs did not record distance, strand and pair-type distributions; these
+are marked unavailable. Add `--recompute-contact-stats` to read the entire
+final uncompressed pairs file once (which must have been retained) and calculate those distributions without
+modifying the original result. This can take time for large datasets. The
+command does not overwrite an existing report. Report creation is part of a
+successful `run`; an error leaves the output and `failure.json` for inspection.
 
 ## Map FASTQ chunks
 
@@ -182,7 +228,7 @@ set the corresponding `fastq.sam` fields `min_mapq`, `max_molecule_size`, and
 
 With `compressed_pairs: true`, the pipeline also writes
 `filtered-nodups.pairs.gz` and its `.px2` pairix index in Rust, using the
-specified `compression_threads` (default 4). Compression reads the retained
+specified `compression_threads` (default 4). Compression reads the temporary
 plain pairs after matrix generation, so its time is included in the pipeline
 total and it requires space for both files.
 
@@ -239,19 +285,60 @@ the aligner once on the unchunked input selected one additional pair in this
 test. Chunking can therefore change alignment results; this experiment does
 not establish biological accuracy or generalize the size of the difference.
 
+## Restriction-fragment filtering
+
+Restriction-fragment filtering is **off by default**, including in the example
+configuration. This matches runHiC's default of leaving `--add-frag` off; it
+does not imply that the rest of the pipelines have identical defaults or results.
+When enabled, the workflow assigns each mapped end to a predicted restriction
+fragment and removes pairs whose ends fall in the same fragment of the same
+chromosome. This includes dangling and self-ligation pairs; other orientations
+within a fragment are also removed. The remaining pairs are deduplicated and
+used to generate the matrix. Enabling this filter therefore changes the output.
+`filter-stats.json` records removed and retained counts.
+
+Choose a fragment definition that matches the actual experiment. For the
+two-enzyme Arima Hi-C scheme, enable in-silico digestion with:
+
+```yaml
+digest:
+  enzyme: Arima
+  reference: hg38.fa
+```
+
+The program scans the reference for MboI (`^GATC`) and HinfI (`G^ANTC`)
+sites and generates a BED using runHiC's coordinate convention. `^` marks
+the cleavage position and `N` is a variable base. The uncompressed FASTA
+must contain every chromosome in `chromsizes` at the stated length. The BED is
+written to the scratch workspace and removed after a successful run. On the hg38 reference used for local testing, the
+generated BED matched runHiC's byte for byte. This does not establish
+equivalence for every possible reference or Arima kit chemistry.
+
+Alternatively, provide a precomputed fragment BED:
+
+```yaml
+fragments: hg38.fragments.bed
+```
+
+Use a BED from the correct reference assembly and enzyme or enzyme combination.
+It must contain three columns (chromosome, start, end), with contiguous
+intervals starting at zero for each chromosome. Automatic digestion currently
+supports only the two-enzyme Arima scheme; use a precomputed BED for other
+restriction enzymes. Specify at most one of `digest` and `fragments`.
+
+For experiments without fixed restriction sites, such as Micro-C, leave both
+settings unset; do not use an unrelated restriction-fragment BED. The rest of
+the pipeline still runs, but Micro-C and other experiment-specific workflows
+have not yet been validated on real datasets.
+
 ## Alternative inputs and resources
 
-To generate Arima fragments in Rust, replace `fragments` with
-`"digest": {"enzyme": "Arima", "reference": "hg38.fa"}`. The FASTA must
-contain all chromosomes in the sizes file at the stated lengths. Arima is the
-only supported automatic digest; provide a precomputed `fragments` BED for
-other enzymes. Omit both `fragments` and `digest` to skip fragment filtering.
 To start from pairs instead,
 replace `fastq` with `"input_pairs": ["a.pairs", "b.pairs"]` and set
 `"input_sorted": true` only for already sorted inputs. The output directory
 must not exist; the scratch directory must exist and have sufficient space.
-Scratch intermediates remain after the run for inspection, including on
-success; the path is recorded in `work-dir.txt`. `status.json` is written only
+Scratch intermediates are removed after success; on failure their path is
+recorded in `work-dir.txt` for inspection. `status.json` is written only
 on success; logs and partial output may
 remain on failure. The default ten resolutions and 1,000 ICE iterations can
 be changed with `resolutions` (integer multiples of the first value) and
@@ -341,7 +428,7 @@ Fix the reported problem and run it again; it does not reserve space or prevent
 files from changing after the check. A regular `run` performs the same
 preflight automatically. If the pipeline fails after creating its output
 directory, inspect `failure.json`, `events.jsonl`, stage logs, and the scratch
-path in `work-dir.txt`. Scratch is retained even after a successful `run`.
+path in `work-dir.txt`. Scratch is retained on failure.
 Choose a new output directory for a retry; existing outputs are not overwritten.
 
 Standalone `map`, `clean`, and `matrix` retain their temporary workspace and

@@ -2,6 +2,7 @@ use super::format::Format;
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::{
+    collections::BTreeMap,
     env,
     fs::{self, OpenOptions},
     io::{self, BufRead, BufReader, BufWriter, Write},
@@ -15,7 +16,40 @@ struct Stats {
     trans: u64,
     cis_20kb_plus: u64,
     cis_shorter_than_20kb: u64,
+    pair_types: BTreeMap<String, u64>,
+    strand_orientations: BTreeMap<String, u64>,
+    cis_distance_bins: Vec<DistanceBin>,
 }
+
+#[derive(Serialize)]
+struct DistanceBin {
+    start_bp: u64,
+    end_bp: Option<u64>,
+    count: u64,
+}
+
+const DISTANCE_STARTS: [u64; 20] = [
+    0,
+    1_000,
+    2_000,
+    5_000,
+    10_000,
+    20_000,
+    50_000,
+    100_000,
+    200_000,
+    500_000,
+    1_000_000,
+    2_000_000,
+    5_000_000,
+    10_000_000,
+    20_000_000,
+    50_000_000,
+    100_000_000,
+    200_000_000,
+    500_000_000,
+    1_000_000_000,
+];
 fn run() -> Result<()> {
     let args: Vec<_> = env::args().collect();
     if args.len() != 2 {
@@ -31,6 +65,8 @@ fn run() -> Result<()> {
     let mut input = BufReader::with_capacity(1024 * 1024, stdin.lock());
     let mut out = BufWriter::with_capacity(1024 * 1024, io::stdout().lock());
     let mut stats = Stats::default();
+    let mut orientations = [0u64; 5];
+    let mut distance_counts = [0u64; DISTANCE_STARTS.len()];
     let mut line = String::new();
     let mut body = false;
     let mut format = None;
@@ -60,9 +96,24 @@ fn run() -> Result<()> {
             bail!("unmapped record unsupported")
         };
         stats.total_nodups += 1;
+        if let Some(count) = stats.pair_types.get_mut(f[7]) {
+            *count += 1;
+        } else {
+            stats.pair_types.insert(f[7].to_owned(), 1);
+        }
+        orientations[match (f[5], f[6]) {
+            ("+", "+") => 0,
+            ("+", "-") => 1,
+            ("-", "+") => 2,
+            ("-", "-") => 3,
+            _ => 4,
+        }] += 1;
         if f[1] == f[3] {
             stats.cis += 1;
-            if a.abs_diff(b) >= 20_000 {
+            let distance = a.abs_diff(b);
+            let bin = DISTANCE_STARTS.partition_point(|start| *start <= distance) - 1;
+            distance_counts[bin] += 1;
+            if distance >= 20_000 {
                 stats.cis_20kb_plus += 1
             } else {
                 stats.cis_shorter_than_20kb += 1
@@ -82,6 +133,21 @@ fn run() -> Result<()> {
     if format.is_none() {
         bail!("missing supported columns header")
     };
+    for (name, count) in ["++", "+-", "-+", "--", "other"]
+        .into_iter()
+        .zip(orientations)
+    {
+        stats.strand_orientations.insert(name.into(), count);
+    }
+    stats.cis_distance_bins = DISTANCE_STARTS
+        .iter()
+        .enumerate()
+        .map(|(i, &start_bp)| DistanceBin {
+            start_bp,
+            end_bp: DISTANCE_STARTS.get(i + 1).copied(),
+            count: distance_counts[i],
+        })
+        .collect();
     out.flush()?;
     let mut f = OpenOptions::new()
         .write(true)

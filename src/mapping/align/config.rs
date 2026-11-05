@@ -246,6 +246,10 @@ pub fn resolve(c: &mut FastqConfig, base: &Path) -> Result<()> {
                 "--reference",
                 "--threads",
                 "--output",
+                "--SAM",
+                "--BED",
+                "--TagAlign",
+                "--pairs",
             ]
             .iter()
             .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))

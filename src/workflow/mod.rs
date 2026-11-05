@@ -5,6 +5,7 @@ pub(crate) mod digest;
 pub(crate) mod pairix;
 pub(crate) mod preflight;
 pub(crate) mod process;
+pub(crate) mod report;
 pub(crate) mod stage;
 
 use crate::mapping::align;
@@ -42,12 +43,14 @@ fn path_from(base: &Path, p: &Path) -> PathBuf {
         base.join(p)
     }
 }
-pub(crate) fn run(path: &Path, check: bool) -> Result<()> {
+pub(crate) fn run(path: &Path, check: bool, keep_pairs: bool, keep_bam: bool) -> Result<()> {
     let config_path =
         fs::canonicalize(path).with_context(|| format!("open configuration {}", path.display()))?;
     let base = config_path.parent().context("config parent")?;
-    let c: Config = serde_yaml::from_reader(File::open(&config_path)?)
+    let mut c: Config = serde_yaml::from_reader(File::open(&config_path)?)
         .with_context(|| format!("parse configuration {}", config_path.display()))?;
+    c.keep_pairs |= keep_pairs;
+    c.keep_bam |= keep_bam;
     if check {
         let c = preflight::prepare(c, base, false)?;
         println!(
@@ -112,7 +115,7 @@ pub(crate) fn run_config(
                 false,
             )?;
             log(&out, "fastq_index_done", started)?;
-            chunks::map_and_prepare(
+            let sorted = chunks::map_and_prepare(
                 &c,
                 c.fastq.as_ref().context("missing FASTQ configuration")?,
                 &idx,
@@ -120,7 +123,20 @@ pub(crate) fn run_config(
                 &out,
                 started,
                 postprocess_cpus.as_ref(),
-            )?
+            )?;
+            if c.keep_bam {
+                let count = c
+                    .fastq
+                    .as_ref()
+                    .and_then(|f| f.chunks)
+                    .context("missing chunk count")?;
+                let parts: Vec<_> = (0..count)
+                    .map(|i| work.join(format!("align-{i:04}/alignments.bam")))
+                    .collect();
+                crate::mapping::bam::merge(&parts, &out.join("alignments.bam"))?;
+                log(&out, "bam_merge_done", started)?;
+            }
+            sorted
         } else if c.input_sorted {
             c.input_pairs.clone()
         } else {
@@ -183,7 +199,11 @@ pub(crate) fn run_config(
             stats.arg(out.join("contact-stats.json"));
             cmds.push(("contact".into(), stats));
         }
-        let pairs = out.join("filtered-nodups.pairs");
+        let pairs = if pairs_only || c.keep_pairs {
+            out.join("filtered-nodups.pairs")
+        } else {
+            work.join("filtered-nodups.pairs")
+        };
         pipe(cmds, &pairs, &out, postprocess_cpus.as_ref())?;
         log(&out, "merge_filter_dedup_done", started)?;
         if !pairs_only {
@@ -239,6 +259,14 @@ pub(crate) fn run_config(
                 restored?;
                 log(&out, "pairix_done", started)?;
             }
+            report::generate(&out, &c, started.elapsed().as_secs_f64())?;
+            eprintln!("report: {}", out.join("report.html").display());
+        }
+        if retain_scratch {
+            fs::remove_dir_all(&work).with_context(|| {
+                format!("remove completed scratch workspace {}", work.display())
+            })?;
+            fs::remove_file(out.join("work-dir.txt"))?;
         }
         log(&out, "pipeline_done", started)?;
         fs::write(
@@ -248,9 +276,6 @@ pub(crate) fn run_config(
                 started.elapsed().as_secs_f64()
             ),
         )?;
-        if retain_scratch {
-            eprintln!("scratch retained: {}", work.display());
-        }
         Ok(())
     })();
     if let Err(error) = &outcome {

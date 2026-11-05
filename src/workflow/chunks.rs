@@ -176,8 +176,15 @@ pub(super) fn map_and_prepare(
             }));
         }
         drop(receive);
-        let mapping =
-            align::map_with_completed(fastq, index, work, out, None, &failed, |i, path| {
+        let mapping = align::map_with_completed(
+            fastq,
+            index,
+            work,
+            out,
+            None,
+            &failed,
+            c.keep_bam,
+            |i, path| {
                 chunk_event(out, &event_lock, "alignment_chunk_done", i, started)?;
                 if failed.load(Ordering::Acquire) {
                     bail!("chunk preparation failed")
@@ -185,7 +192,8 @@ pub(super) fn map_and_prepare(
                 send.send((i, path.to_path_buf()))
                     .context("chunk preparation workers stopped")?;
                 Ok(())
-            });
+            },
+        );
         drop(send);
         if mapping.is_err() {
             failed.store(true, Ordering::Release);

@@ -47,6 +47,106 @@ fn terminate(p: &mut Child) {
     }
     let _ = p.wait();
 }
+
+// Chromap emits either pairs or SAM, so retaining its alignments requires a
+// second pass. Keeping the first pass unchanged preserves its Hi-C semantics.
+fn chromap_bam(
+    c: &FastqConfig,
+    index: &Path,
+    dir: &Path,
+    logs: &Path,
+    i: usize,
+    cancelled: &AtomicBool,
+) -> Result<()> {
+    let f1 = dir.join("bam-read1.fifo");
+    let f2 = dir.join("bam-read2.fifo");
+    let sam_output = dir.join("bam-output.sam");
+    fifo(&f1)?;
+    fifo(&f2)?;
+    // A chunk-specific stdout symlink also gives Chromap's low-memory
+    // temporary files unique names without changing its working directory.
+    std::os::unix::fs::symlink("/dev/stdout", &sam_output)?;
+    let mut child = Command::new(&c.aligner_executable)
+        .args(["--preset", "hic", "--low-mem", "--SAM", "-x"])
+        .arg(&c.aligner_index)
+        .arg("-r")
+        .arg(&c.reference)
+        .arg("-t")
+        .arg(c.threads_per_job.to_string())
+        .arg("-1")
+        .arg(&f1)
+        .arg("-2")
+        .arg(&f2)
+        .arg("-o")
+        .arg(&sam_output)
+        .args(&c.aligner_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(File::create(
+            logs.join(format!("align-{i:04}-bam.log")),
+        )?))
+        .spawn()
+        .context("start Chromap BAM pass")?;
+    let stdout = child.stdout.take().context("capture Chromap SAM")?;
+    let cancel = AtomicBool::new(false);
+    let result = thread::scope(|scope| -> Result<()> {
+        let (tx, rx) = mpsc::channel();
+        let worker = tx.clone();
+        let cancel_ref = &cancel;
+        let first = &f1;
+        let second = &f2;
+        scope.spawn(move || {
+            let result =
+                crate::fastq_index::stream_split(index, i, [first, second], cancel_ref).map(|_| ());
+            let _ = worker.send(result);
+        });
+        let bam_path = dir.join("alignments.bam");
+        scope.spawn(move || {
+            let result = super::super::bam::sam_to_bam(BufReader::new(stdout), &bam_path);
+            let _ = tx.send(result);
+        });
+        let mut finished = 0;
+        let mut status = None;
+        loop {
+            if cancelled.load(Ordering::Acquire) {
+                cancel.store(true, Ordering::Release);
+                terminate(&mut child);
+                bail!("alignment cancelled")
+            }
+            while let Ok(result) = rx.try_recv() {
+                if let Err(e) = result {
+                    cancel.store(true, Ordering::Release);
+                    terminate(&mut child);
+                    return Err(e).context("Chromap BAM pass");
+                }
+                finished += 1;
+            }
+            if status.is_none() {
+                status = child.try_wait()?;
+            }
+            if let Some(s) = status {
+                if !s.success() {
+                    cancel.store(true, Ordering::Release);
+                    bail!("Chromap BAM pass failed: {s}")
+                }
+                if finished == 2 {
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        Ok(())
+    });
+    if result.is_err() {
+        cancel.store(true, Ordering::Release);
+        terminate(&mut child);
+    }
+    result?;
+    fs::remove_file(f1)?;
+    fs::remove_file(f2)?;
+    fs::remove_file(sam_output)?;
+    Ok(())
+}
+#[allow(clippy::too_many_arguments)] // Chunk context and shared aligner state.
 pub(super) fn align_one(
     c: &FastqConfig,
     index: &Path,
@@ -55,6 +155,7 @@ pub(super) fn align_one(
     i: usize,
     mem3: Option<(&Arc<bwa_mem3_rs::BwaIndex>, &Arc<bwa_mem3_rs::MemOpts>)>,
     cancelled: &AtomicBool,
+    keep_bam: bool,
 ) -> Result<(PathBuf, u64)> {
     if cancelled.load(Ordering::Acquire) {
         bail!("alignment cancelled")
@@ -62,7 +163,7 @@ pub(super) fn align_one(
     if let Some((reference, opts)) = mem3 {
         let output = work.join(format!("align-{i:04}")).join("alignments.pairs");
         return super::super::bwa_mem3::align_one(
-            c, index, work, logs, i, output, reference, opts, cancelled,
+            c, index, work, logs, i, output, reference, opts, cancelled, keep_bam,
         );
     }
     let started = Instant::now();
@@ -112,6 +213,7 @@ pub(super) fn align_one(
     enum Finished {
         Stream(Result<()>),
         Parser(Result<super::super::sam::Counts>),
+        Bam(Result<()>),
     }
     let cancel = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel();
@@ -156,13 +258,28 @@ pub(super) fn align_one(
         if let Some(stdout) = aligner.stdout.take() {
             let tx = tx.clone();
             let outpath = output.clone();
+            let reader: Box<dyn std::io::Read + Send> = if keep_bam {
+                let (read, write) = std::os::unix::net::UnixStream::pair()?;
+                let bam_tx = tx.clone();
+                let bam_path = dir.join("alignments.bam");
+                scope.spawn(move || {
+                    let result = super::super::bam::sam_to_bam(BufReader::new(read), &bam_path);
+                    let _ = bam_tx.send(Finished::Bam(result));
+                });
+                Box::new(super::super::bam::Tee {
+                    input: stdout,
+                    copy: write,
+                })
+            } else {
+                Box::new(stdout)
+            };
             let parser = thread::Builder::new()
                 .name(format!("pairs-{i:04}"))
                 .spawn_scoped(scope, move || {
                     let result = (|| -> Result<_> {
                         let output = BufWriter::with_capacity(1024 * 1024, File::create(outpath)?);
                         super::super::sam::convert(
-                            BufReader::with_capacity(1024 * 1024, stdout),
+                            BufReader::with_capacity(1024 * 1024, reader),
                             output,
                             c.sam.min_mapq,
                             c.sam.max_molecule_size,
@@ -179,6 +296,7 @@ pub(super) fn align_one(
         }
         drop(tx);
         let (mut done, mut parsed, mut result) = (0, None, None);
+        let mut bam_done = !keep_bam || is_chromap;
         loop {
             if cancelled.load(Ordering::Acquire) {
                 result = Some(anyhow::anyhow!("alignment cancelled"));
@@ -200,6 +318,13 @@ pub(super) fn align_one(
                             break;
                         }
                     },
+                    Finished::Bam(r) => {
+                        bam_done = true;
+                        if let Err(e) = r {
+                            result = Some(e);
+                            break;
+                        }
+                    }
                 }
             }
             if result.is_some() {
@@ -218,7 +343,7 @@ pub(super) fn align_one(
                     result = Some(anyhow::anyhow!("{} chunk {i} failed: {s}", c.aligner));
                     break;
                 }
-                if done == 1 && (is_chromap || parsed.is_some()) {
+                if done == 1 && (is_chromap || parsed.is_some()) && bam_done {
                     break;
                 }
             }
@@ -257,6 +382,9 @@ pub(super) fn align_one(
     fs::remove_file(f1)?;
     if is_chromap {
         fs::remove_file(f2)?;
+    }
+    if keep_bam && is_chromap {
+        chromap_bam(c, index, &dir, logs, i, cancelled)?;
     }
     serde_json::to_writer_pretty(
         File::create(logs.join(format!("align-{i:04}-stats.json")))?,
