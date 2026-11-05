@@ -15,8 +15,12 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
-    /// Print a complete example YAML configuration to standard output.
-    ExampleConfig,
+    /// Print an example YAML configuration to standard output.
+    ExampleConfig {
+        /// Print only the required settings; omit to show all available settings.
+        #[arg(long)]
+        minimal: bool,
+    },
     /// Generate an HTML and JSON report from a completed run.
     Report {
         /// Directory containing a completed run.
@@ -30,7 +34,7 @@ pub(crate) enum Command {
     },
     /// Run the pipeline from a YAML configuration.
     #[command(
-        after_help = "Create a complete example with: rust-hic example-config > config.yaml"
+        after_help = "Create a minimal example with: rust-hic example-config --minimal > config.yaml\nOmit --minimal for the complete example."
     )]
     Run {
         /// YAML configuration file.

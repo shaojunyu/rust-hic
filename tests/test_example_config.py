@@ -37,6 +37,38 @@ class ExampleConfigTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_minimal_example_is_embedded(self):
+        result = command(BIN, 'example-config', '--minimal')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        self.assertEqual(result.stdout, (ROOT / 'docs/example.minimal.config.yaml').read_text())
+
+    @unittest.skipUnless(BWA.is_file(), 'bwa-mem2 is needed to build a reference index')
+    def test_minimal_fastq_example_runs_with_defaults(self):
+        result = command(BWA, 'index', self.work / 'hg38.fa')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for mate in ('R1', 'R2'):
+            shutil.copy(DATA / f'{mate}.fastq.gz', self.work / f'{mate}.fastq.gz')
+        example = command(BIN, 'example-config', '--minimal')
+        self.assertEqual(example.returncode, 0, example.stderr)
+        config = self.work / 'minimal.yaml'
+        config.write_text(example.stdout)
+        check = command(BIN, 'run', config, '--check')
+        self.assertEqual(check.returncode, 0, check.stderr)
+        self.assertFalse((self.work / 'new-result').exists())
+        result = command(BIN, 'run', config)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = self.work / 'new-result'
+        self.assertTrue((out / 'contacts.mcool').is_file())
+        self.assertTrue((out / 'report.html').is_file())
+        self.assertFalse((out / 'filtered-nodups.pairs').exists())
+        self.assertFalse((out / 'alignments.bam').exists())
+        resolved = (out / 'config.resolved.yaml').read_text()
+        self.assertIn('aligner: bwa-mem3', resolved)
+        self.assertIn('index_threads_per_mate: 8', resolved)
+        self.assertIn('balance_max_iterations: 1000', resolved)
+        self.assertIn('fragments: null', resolved)
+
     def run_example(self, text, mismatch=3):
         # Keep the tiny fixture fast and exercise nondefault settings.
         text = text.replace('  merge_workers: 6', '  merge_workers: 2')

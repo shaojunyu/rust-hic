@@ -23,6 +23,9 @@ tar -xzf rust-hic-linux-x86_64.tar.gz
 ./rust-hic run config.yaml
 ```
 
+Development builds can also output a minimal configuration with
+`./rust-hic example-config --minimal`.
+
 The release executable targets x86-64 Linux; its built-in BWA-MEM3 requires
 SSE4.2. External aligners must be installed separately. The archive also contains
 license notices and documentation.

@@ -49,10 +49,13 @@ fn writable_dir(base: &Path, path: &Path, label: &str) -> Result<PathBuf> {
 }
 
 /// Check the sizes file against the constraints used by sorting and matrix output.
-pub(crate) fn validate_chromsizes(path: &Path, base_resolution: Option<u64>) -> Result<()> {
+pub(crate) fn validate_chromsizes(
+    path: &Path,
+    base_resolution: Option<u64>,
+) -> Result<HashMap<String, u64>> {
     let file =
         File::open(path).with_context(|| format!("open chromosome sizes {}", path.display()))?;
-    let mut seen = HashSet::new();
+    let mut sizes = HashMap::new();
     let mut bins = 0u64;
     for (i, line) in BufReader::new(file).lines().enumerate() {
         let line = line.with_context(|| format!("read {} line {}", path.display(), i + 1))?;
@@ -75,7 +78,7 @@ pub(crate) fn validate_chromsizes(path: &Path, base_resolution: Option<u64>) -> 
                 fields[1]
             )
         })?;
-        if length == 0 || !seen.insert(fields[0].to_owned()) {
+        if length == 0 || sizes.insert(fields[0].to_owned(), length).is_some() {
             bail!(
                 "{}:{}: chromosome length must be positive and names must be unique",
                 path.display(),
@@ -95,13 +98,115 @@ pub(crate) fn validate_chromsizes(path: &Path, base_resolution: Option<u64>) -> 
                 .context("chromosome bin count overflow")?;
         }
     }
-    if seen.is_empty() {
+    if sizes.is_empty() {
         bail!("chromosome sizes file is empty: {}", path.display());
     }
     if bins > u32::MAX as u64 {
         bail!("chromosome sizes and base resolution exceed the supported number of bins");
     }
+    Ok(sizes)
+}
+
+/// Compare contigs shared with chromsizes, allowing intentionally different subsets.
+fn check_contig(
+    name: &str,
+    length: u64,
+    sizes: &HashMap<String, u64>,
+    sizes_path: &Path,
+    source: &Path,
+    matched: &mut usize,
+) -> Result<()> {
+    if let Some(expected) = sizes.get(name) {
+        *matched += 1;
+        if *expected != length {
+            bail!(
+                "chromosome {name} has length {expected} in {} but {length} in {}",
+                sizes_path.display(),
+                source.display()
+            )
+        }
+    }
     Ok(())
+}
+
+fn check_shared_contigs(matched: usize, sizes_path: &Path, source: &Path) -> Result<()> {
+    if matched == 0 {
+        bail!(
+            "no chromosome names in {} match {}",
+            source.display(),
+            sizes_path.display()
+        )
+    }
+    Ok(())
+}
+
+fn suffixed(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    name.into()
+}
+
+/// BWA's small text .ann file describes the contigs used by its index.
+fn check_bwa_contigs(prefix: &Path, sizes_path: &Path, sizes: &HashMap<String, u64>) -> Result<()> {
+    let path = suffixed(prefix, ".ann");
+    let mut lines = BufReader::new(File::open(&path)?).lines();
+    let header = lines.next().context("missing BWA index header")??;
+    let count: usize = header
+        .split_whitespace()
+        .nth(1)
+        .context("missing BWA index chromosome count")?
+        .parse()
+        .context("invalid BWA index chromosome count")?;
+    let mut matched = 0;
+    for _ in 0..count {
+        let name_line = lines
+            .next()
+            .context("missing BWA index chromosome name")??;
+        let name = name_line
+            .split_whitespace()
+            .nth(1)
+            .context("invalid BWA index chromosome name")?;
+        let length_line = lines
+            .next()
+            .context("missing BWA index chromosome length")??;
+        let length = length_line
+            .split_whitespace()
+            .nth(1)
+            .context("invalid BWA index chromosome length")?
+            .parse()
+            .context("invalid BWA index chromosome length")?;
+        check_contig(name, length, sizes, sizes_path, &path, &mut matched)?;
+    }
+    check_shared_contigs(matched, sizes_path, &path)
+}
+
+/// Use a FASTA index if one already exists; do not scan or index the FASTA.
+fn check_fasta_contigs(
+    reference: &Path,
+    sizes_path: &Path,
+    sizes: &HashMap<String, u64>,
+) -> Result<()> {
+    let path = suffixed(reference, ".fai");
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("open FASTA index {}", path.display())),
+    };
+    let mut matched = 0;
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        let mut fields = line.split_whitespace();
+        let name = fields
+            .next()
+            .context("missing FASTA index chromosome name")?;
+        let length = fields
+            .next()
+            .context("missing FASTA index chromosome length")?
+            .parse()
+            .context("invalid FASTA index chromosome length")?;
+        check_contig(name, length, sizes, sizes_path, &path, &mut matched)?;
+    }
+    check_shared_contigs(matched, sizes_path, &path)
 }
 
 pub(crate) fn check_pairs(path: &Path) -> Result<(Vec<String>, Format)> {
@@ -158,7 +263,7 @@ pub(super) fn prepare(mut c: Config, base: &Path, pairs_only: bool) -> Result<Co
     affinity_mask(r.postprocess_cpus.as_deref())?;
     validate_resolutions(&c.resolutions)?;
     c.chromsizes = input_file(base, &c.chromsizes, "chromosome sizes")?;
-    validate_chromsizes(&c.chromsizes, (!pairs_only).then_some(c.resolutions[0]))?;
+    let sizes = validate_chromsizes(&c.chromsizes, (!pairs_only).then_some(c.resolutions[0]))?;
     c.fragments = c
         .fragments
         .as_ref()
@@ -200,6 +305,20 @@ pub(super) fn prepare(mut c: Config, base: &Path, pairs_only: bool) -> Result<Co
     }
     if let Some(fastq) = &mut c.fastq {
         align::resolve(fastq, base)?;
+        if fastq.aligner != "chromap" {
+            check_bwa_contigs(&fastq.aligner_index, &c.chromsizes, &sizes).with_context(|| {
+                format!(
+                    "check BWA index {}",
+                    suffixed(&fastq.aligner_index, ".ann").display()
+                )
+            })?;
+        }
+        check_fasta_contigs(&fastq.reference, &c.chromsizes, &sizes).with_context(|| {
+            format!(
+                "check FASTA index {}",
+                suffixed(&fastq.reference, ".fai").display()
+            )
+        })?;
         if let Some(index) = &fastq.index_dir {
             align::validate_reusable_index(fastq, index)?;
             crate::fastq_index::verify(index, 1)

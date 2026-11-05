@@ -122,6 +122,92 @@ class PreflightTests(unittest.TestCase):
         self.assertIn('same FASTQ file', result.stderr)
         self.assertFalse(output.exists())
 
+    def use_bwa_index(self, aligner='bwa-mem3'):
+        prefix = self.work / 'reference'
+        suffixes = ['.amb', '.ann', '.pac']
+        suffixes += ['.bwt', '.sa'] if aligner == 'bwa-mem' else ['.bwt.2bit.64']
+        if aligner == 'bwa-mem2':
+            suffixes.append('.0123')
+        for suffix in suffixes:
+            Path(f'{prefix}{suffix}').touch()
+        Path(f'{prefix}.ann').write_text(
+            '50000 2 11\n0 chr1 description\n0 25000 0\n0 chr2\n25000 25000 0\n'
+        )
+        self.config.pop('input_pairs', None)
+        self.config['fastq'] = {
+            'read1': str(DATA / 'R1.fastq.gz'), 'read2': str(DATA / 'R2.fastq.gz'),
+            'reference': str(DATA / 'genome.fa'), 'aligner_index': str(prefix),
+            'aligner': aligner,
+        }
+        if aligner != 'bwa-mem3':
+            self.config['fastq']['aligner_executable'] = '/bin/true'
+        return prefix
+
+    def test_bwa_contig_lengths_are_checked_before_output(self):
+        for aligner in ('bwa-mem3', 'bwa-mem2', 'bwa-mem'):
+            with self.subTest(aligner=aligner):
+                self.use_bwa_index(aligner)
+                self.assertEqual(self.check().returncode, 0)
+                sizes = self.work / 'wrong.sizes'
+                sizes.write_text('chr1 26000\nchr2 25000\n')
+                self.config['chromsizes'] = str(sizes)
+                for check_only in (True, False):
+                    result = self.check(check_only)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('chr1', result.stderr)
+                    self.assertIn('26000', result.stderr)
+                    self.assertIn('25000', result.stderr)
+                    self.assertIn('reference.ann', result.stderr)
+                    self.assertFalse(self.output.exists())
+                self.config['chromsizes'] = str(DATA / 'chrom.sizes')
+
+    def test_bwa_contig_subsets_and_disjoint_names(self):
+        self.use_bwa_index()
+        sizes = self.work / 'subset.sizes'
+        sizes.write_text('chr3 1000\nchr2 25000\n')
+        self.config['chromsizes'] = str(sizes)
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        sizes.write_text('other 1000\n')
+        result = self.check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('no chromosome names', result.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_optional_fasta_index_is_checked_for_chromap(self):
+        reference = self.work / 'reference.fa'
+        shutil.copyfile(DATA / 'genome.fa', reference)
+        aligner_index = self.work / 'chromap.index'
+        aligner_index.touch()
+        del self.config['input_pairs']
+        self.config['fastq'] = {
+            'read1': str(DATA / 'R1.fastq.gz'), 'read2': str(DATA / 'R2.fastq.gz'),
+            'reference': str(reference), 'aligner_index': str(aligner_index),
+            'aligner': 'chromap', 'aligner_executable': '/bin/true',
+        }
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stderr)  # .fai is optional.
+        fai = Path(f'{reference}.fai')
+        fai.write_text('chr1\t25000\t6\t50\t51\nchr2\t25000\t1\t50\t51\n')
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        fai.write_text('chr1\t26000\t6\t50\t51\nchr2\t25000\t1\t50\t51\n')
+        result = self.check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('reference.fa.fai', result.stderr)
+        self.assertIn('chr1', result.stderr)
+        self.assertIn('26000', result.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_truncated_bwa_annotation_fails_cleanly(self):
+        prefix = self.use_bwa_index()
+        Path(f'{prefix}.ann').write_text('50000 2 11\n0 chr1\n0 25000 0\n0 chr2\n')
+        result = self.check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('reference.ann', result.stderr)
+        self.assertIn('missing BWA index chromosome length', result.stderr)
+        self.assertFalse(self.output.exists())
+
     def test_reused_index_fingerprint_is_checked_before_output(self):
         index = self.work / 'index'
         result = self.command('index', DATA / 'R1.fastq.gz', DATA / 'R2.fastq.gz',

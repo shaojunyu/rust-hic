@@ -37,8 +37,9 @@ using multiple temporary runs and parallel merge ranges.
 
 `tests/test_example_config.py` checks the embedded example and reports, and runs
 it with pairs plus Arima digestion, without restriction filtering, and with
-built-in BWA-MEM3 FASTQ input. It checks report regeneration and detailed
-statistics for older outputs. The BWA-MEM3 case requires `bwa-mem2` to build
+built-in BWA-MEM3 FASTQ input. It also runs the minimal example using defaults
+and checks report regeneration and detailed statistics for older outputs. The
+BWA-MEM3 case requires `bwa-mem2` to build
 the test reference index and is skipped if it is unavailable.
 
 `tests/test_workflow_overlap.py` checks that chunk sorting and restriction
@@ -64,5 +65,5 @@ assert that the two aligners agree on all biological inputs.
 
 `tests/test_preflight.py` exercises `run --check`, invalid input and output
 paths, chromosome sizes, fragment BEDs, sorted pairs headers, gzip signatures,
-and reusable-index fingerprint failures. It requires only Python 3 and a built
-executable; set `RUST_HIC_BIN` to select the binary.
+reference index metadata, and reusable-index fingerprint failures. It requires
+only Python 3 and a built executable; set `RUST_HIC_BIN` to select the binary.

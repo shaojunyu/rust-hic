@@ -1,7 +1,7 @@
 # Usage
 
 This page describes the development version. The v0.1.0 release predates the
-run report and the `--keep-bam` and `--keep-pairs` options described below.
+minimal example, run report and `--keep-bam` and `--keep-pairs` options below.
 
 `rust-hic run CONFIG.yaml` indexes paired gzip FASTQs, aligns chunks, sorts,
 merges, filters and deduplicates contacts, and produces a multi-resolution
@@ -20,15 +20,26 @@ examples below assume it is named `rust-hic` in the current directory. See
 
 ## Configure and run
 
-Create a complete example configuration, then edit the input paths and settings:
+Create a minimal configuration and edit its input paths:
+
+```sh
+./rust-hic example-config --minimal > config.yaml
+```
+
+It contains only the settings required for FASTQ input. Other settings use their
+defaults, including the built-in BWA-MEM3 aligner. Its reference index must be
+created beforehand; a BWA-MEM2-compatible index can be used. Restriction
+fragment filtering is disabled unless explicitly configured.
+
+For an annotated example of all available settings, use:
 
 ```sh
 ./rust-hic example-config > config.yaml
 ```
 
-The same annotated file is available as [example.config.yaml](example.config.yaml).
-The example uses FASTQ input and leaves restriction-fragment filtering disabled;
-it also documents alternatives for pairs input and optional fragment filtering. Relative paths are
+The files are also available as [minimal](example.minimal.config.yaml) and
+[complete](example.config.yaml) examples. The complete example documents
+alternatives for pairs input and optional fragment filtering. Relative paths are
 resolved against the YAML file's directory. Run
 `./rust-hic run config.yaml --check` before starting the pipeline. This
 checks settings, inputs, available aligner and index files, and whether the
@@ -37,6 +48,12 @@ chromosome sizes and fragment BED, checks pairs headers and gzip signatures,
 and verifies fingerprints and boundary IDs when reusing a FASTQ index. It does
 not fully validate FASTQ or pairs records, verify all reference-index contents,
 or guarantee sufficient disk space. The check does not create the result directory.
+
+For BWA, preflight also compares shared chromosome names and lengths with the
+index's `.ann` file. If the reference FASTA has a `.fai` index, it compares
+that too for any aligner. Different chromosome subsets are allowed, but at
+least one name must match. These checks do not compare the FASTA sequence with
+the aligner index; the reference and its indexes must be kept consistent.
 
 The main FASTQ options are:
 

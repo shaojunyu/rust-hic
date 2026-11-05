@@ -120,20 +120,9 @@ mod tests {
     fn example_config_matches_defaults() {
         let example: Config = serde_yaml::from_str(include_str!("../../docs/example.config.yaml"))
             .expect("example config must parse");
-        let minimal: Config = serde_yaml::from_str(
-            r#"
-assembly: hg38
-chromsizes: hg38.chrom.sizes
-fastq:
-  read1: R1.fastq.gz
-  read2: R2.fastq.gz
-  reference: hg38.fa
-  aligner_index: hg38.fa
-output_dir: new-result
-scratch_dir: .
-"#,
-        )
-        .unwrap();
+        let minimal: Config =
+            serde_yaml::from_str(include_str!("../../docs/example.minimal.config.yaml"))
+                .expect("minimal example config must parse");
         assert_eq!(
             serde_yaml::to_value(example).unwrap(),
             serde_yaml::to_value(minimal).unwrap(),

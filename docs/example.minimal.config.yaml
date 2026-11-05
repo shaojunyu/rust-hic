@@ -1,0 +1,14 @@
+# Minimal FASTQ configuration for `rust-hic run`.
+# Edit these paths; other settings use their defaults.
+# Relative paths are resolved against this configuration file's directory.
+assembly: hg38
+chromsizes: hg38.chrom.sizes
+
+fastq:
+  read1: R1.fastq.gz
+  read2: R2.fastq.gz
+  reference: hg38.fa
+  aligner_index: hg38.fa  # Existing BWA-MEM2-compatible index prefix.
+
+output_dir: new-result  # Must not already exist.
+scratch_dir: .  # Existing writable directory for intermediate files.

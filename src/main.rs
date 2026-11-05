@@ -29,9 +29,13 @@ fn main() {
     }
     let cli = cli::Cli::parse();
     let result = match cli.command {
-        Some(cli::Command::ExampleConfig) => std::io::stdout()
+        Some(cli::Command::ExampleConfig { minimal }) => std::io::stdout()
             .lock()
-            .write_all(include_bytes!("../docs/example.config.yaml"))
+            .write_all(if minimal {
+                include_bytes!("../docs/example.minimal.config.yaml")
+            } else {
+                include_bytes!("../docs/example.config.yaml")
+            })
             .map_err(Into::into),
         Some(cli::Command::Report {
             result_dir,
