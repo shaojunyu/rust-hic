@@ -27,7 +27,7 @@ fastq:
   aligner_args: []  # Individual arguments, e.g. ["-k", "19"].
   # chunks: 16  # Optional explicit count (1-256); overrides chunk_size_bytes.
   chunk_size_bytes: 2147483648  # Compressed bytes, used to estimate chunk count.
-  jobs: 4  # Concurrent chunks.
+  jobs: 4  # Concurrent chunks; also limits a Slurm array.
   threads_per_job: 8  # Aligner threads per chunk.
   index_threads_per_mate: 8
   index_search_mib: 128

@@ -1,5 +1,5 @@
 //! Prepare completed mapping chunks while other chunks are still aligning.
-use super::{config::Config, log};
+use super::{config::Config, log, RunClock};
 use crate::{
     mapping::align,
     pairs::filter,
@@ -13,11 +13,10 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex,
     },
     thread,
-    time::Instant,
 };
 
 pub(super) fn sort_one(
@@ -103,7 +102,7 @@ fn chunk_event(
     lock: &Mutex<()>,
     name: &str,
     chunk: usize,
-    start: Instant,
+    start: RunClock,
 ) -> Result<()> {
     let _guard = lock
         .lock()
@@ -118,17 +117,8 @@ fn chunk_event(
     Ok(())
 }
 
-pub(super) fn map_and_prepare(
-    c: &Config,
-    fastq: &align::FastqConfig,
-    index: &Path,
-    work: &Path,
-    out: &Path,
-    started: Instant,
-    cpus: Option<&libc::cpu_set_t>,
-) -> Result<Vec<PathBuf>> {
-    let chunks = fastq.chunks.context("missing index chunk count")?;
-    let paths: Vec<_> = (0..chunks)
+fn prepared_paths(c: &Config, work: &Path, chunks: usize) -> Vec<PathBuf> {
+    (0..chunks)
         .map(|i| {
             let prefix = if c.fragments.is_some() {
                 "filtered"
@@ -137,7 +127,106 @@ pub(super) fn map_and_prepare(
             };
             work.join(format!("{prefix}-{i:04}.pairs"))
         })
-        .collect();
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)] // Shared context for preparing one mapped chunk.
+fn prepare_one(
+    c: &Config,
+    work: &Path,
+    out: &Path,
+    i: usize,
+    input: &Path,
+    output: &Path,
+    started: RunClock,
+    cpus: Option<&libc::cpu_set_t>,
+    event_lock: &Mutex<()>,
+) -> Result<()> {
+    chunk_event(out, event_lock, "sort_chunk_start", i, started)?;
+    let sorted = work.join(format!("sorted-{i:04}.pairs"));
+    sort_one(c, work, out, i, input, &sorted)?;
+    chunk_event(out, event_lock, "sort_chunk_done", i, started)?;
+    if c.fragments.is_some() {
+        chunk_event(out, event_lock, "filter_chunk_start", i, started)?;
+        filter_one(c, out, i, &sorted, output, cpus)?;
+        chunk_event(out, event_lock, "filter_chunk_done", i, started)?;
+    }
+    Ok(())
+}
+
+fn finish_preparation(c: &Config, out: &Path, chunks: usize, started: RunClock) -> Result<()> {
+    if c.fragments.is_some() {
+        let stats: Vec<_> = (0..chunks)
+            .map(|i| out.join(format!("filter-{i:04}-stats.json")))
+            .collect();
+        filter::combine_stats(&stats, &out.join("filter-stats.json"))?;
+        fs::write(out.join("filter.log"), format!("Restriction filtering completed independently for {chunks} chunks; see filter-NNNN.log.\n"))?;
+    }
+    log(out, "sort_done", started)
+}
+
+/// Sort and optionally filter already mapped chunks on the current node.
+pub(super) fn prepare_mapped(
+    c: &Config,
+    inputs: &[PathBuf],
+    work: &Path,
+    out: &Path,
+    started: RunClock,
+    cpus: Option<&libc::cpu_set_t>,
+) -> Result<Vec<PathBuf>> {
+    let chunks = inputs.len();
+    if chunks == 0 {
+        bail!("no mapped chunks to prepare")
+    }
+    let paths = prepared_paths(c, work, chunks);
+    let event_lock = Mutex::new(());
+    let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let errors = Mutex::new(Vec::new());
+    log(out, "sort_start", started)?;
+    thread::scope(|scope| {
+        for _ in 0..c.resources.sort_jobs.min(chunks) {
+            let event_lock = &event_lock;
+            let next = &next;
+            let failed = &failed;
+            let errors = &errors;
+            let paths = &paths;
+            scope.spawn(move || loop {
+                if failed.load(Ordering::Acquire) {
+                    break;
+                }
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                if i >= chunks {
+                    break;
+                }
+                if let Err(e) = prepare_one(
+                    c, work, out, i, &inputs[i], &paths[i], started, cpus, event_lock,
+                ) {
+                    failed.store(true, Ordering::Release);
+                    errors.lock().unwrap().push(format!("chunk {i}: {e:#}"));
+                }
+            });
+        }
+    });
+    let errors = errors.into_inner().unwrap();
+    if !errors.is_empty() {
+        bail!("chunk preparation failed: {}", errors.join("; "))
+    }
+    finish_preparation(c, out, chunks, started)?;
+    Ok(paths)
+}
+
+pub(super) fn map_and_prepare(
+    c: &Config,
+    fastq: &align::FastqConfig,
+    index: &Path,
+    work: &Path,
+    out: &Path,
+    started: RunClock,
+    cpus: Option<&libc::cpu_set_t>,
+) -> Result<Vec<PathBuf>> {
+    let chunks = fastq.chunks.context("missing index chunk count")?;
+    let paths = prepared_paths(c, work, chunks);
     log(out, "alignment_start", started)?;
     log(out, "sort_start", started)?;
     let event_lock = Mutex::new(());
@@ -155,18 +244,9 @@ pub(super) fn map_and_prepare(
                     if failed.load(Ordering::Acquire) {
                         break;
                     }
-                    let result = (|| -> Result<()> {
-                        chunk_event(out, event_lock, "sort_chunk_start", i, started)?;
-                        let sorted = work.join(format!("sorted-{i:04}.pairs"));
-                        sort_one(c, work, out, i, &input, &sorted)?;
-                        chunk_event(out, event_lock, "sort_chunk_done", i, started)?;
-                        if c.fragments.is_some() {
-                            chunk_event(out, event_lock, "filter_chunk_start", i, started)?;
-                            filter_one(c, out, i, &sorted, &paths[i], cpus)?;
-                            chunk_event(out, event_lock, "filter_chunk_done", i, started)?;
-                        }
-                        Ok(())
-                    })();
+                    let result = prepare_one(
+                        c, work, out, i, &input, &paths[i], started, cpus, event_lock,
+                    );
                     if let Err(e) = result {
                         failed.store(true, Ordering::Release);
                         return Err(e);
@@ -225,13 +305,6 @@ pub(super) fn map_and_prepare(
         Ok(())
     });
     result?;
-    if c.fragments.is_some() {
-        let stats: Vec<_> = (0..chunks)
-            .map(|i| out.join(format!("filter-{i:04}-stats.json")))
-            .collect();
-        filter::combine_stats(&stats, &out.join("filter-stats.json"))?;
-        fs::write(out.join("filter.log"), format!("Restriction filtering completed independently for {chunks} chunks; see filter-NNNN.log.\n"))?;
-    }
-    log(out, "sort_done", started)?;
+    finish_preparation(c, out, chunks, started)?;
     Ok(paths)
 }

@@ -55,16 +55,18 @@ below.
 `.github/workflows/release.yml` builds the statically linked x86-64 Linux
 executable in the repository's Rocky Linux 8 / GCC 15 Docker environment. A
 manual workflow run builds and uploads an Actions artifact without publishing.
-Pushing a version tag such as `v0.1.0` builds, runs Rust unit tests and
-smoke-tests the binary, then creates a GitHub Release with one archive containing
-the executable, licenses and documentation. The tag must match the version in
-`Cargo.toml`; tags with a prerelease suffix create prereleases. The workflow
-needs Actions enabled and repository permission to write release contents.
+Pushing a new version tag builds, runs Rust unit tests and smoke-tests the
+binary, then creates a GitHub Release with one archive containing the
+executable, licenses and documentation. Before tagging, update the package
+version in `Cargo.toml` and `Cargo.lock`; the new tag must match that version
+(for example, version `0.2.0` uses tag `v0.2.0`). Existing release tags cannot
+be reused. Tags with a prerelease suffix create prereleases. The workflow needs
+Actions enabled and repository permission to write release contents.
 
 The workflow caches Cargo downloads and build artifacts. Its Docker base image
 and OS packages are not pinned to immutable digests, so binaries are not
-guaranteed to be bit-for-bit reproducible. A hosted Actions run is still needed
-to validate GitHub-specific permissions and publication.
+guaranteed to be bit-for-bit reproducible. Verify the hosted Actions run and
+repository permissions when publishing a new release.
 
 ## Tests
 

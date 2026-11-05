@@ -1,14 +1,19 @@
 # Usage
 
-This page describes the development version. The v0.1.0 release predates the
-minimal example, run report and `--keep-bam` and `--keep-pairs` options below.
+This guide describes the version in the same source checkout or release
+archive. When using a downloaded binary, consult the documentation bundled
+with it; commands and options can differ between versions.
 
-`rust-hic run CONFIG.yaml` indexes paired gzip FASTQs, aligns chunks, sorts,
+`rust-hic run CONFIG.yaml` runs locally by default. Explicit `--mode local`
+uses the same single-machine workflow; `--mode slurm` submits it to a cluster.
+For Slurm configuration and resource requests, see [Slurm execution](slurm.md).
+
+The workflow indexes paired gzip FASTQs, aligns chunks, sorts,
 merges, filters and deduplicates contacts, and produces a multi-resolution
 `.mcool` file. FASTQ alignment supports built-in BWA-MEM3 and external
 Chromap, BWA-MEM or BWA-MEM2 executables.
-As each FASTQ chunk finishes mapping, `run` starts its sorting and optional
-restriction filtering while other chunks continue mapping. It then merges
+In local mode, as each FASTQ chunk finishes mapping, `run` starts its sorting
+and optional restriction filtering while other chunks continue mapping. It then merges
 all chunks and deduplicates globally, so duplicates spanning chunks are found.
 Mapping and chunk preparation can run at the same time; their configured
 thread and job counts are not a shared CPU limit.
@@ -17,6 +22,42 @@ The pipeline is experimental and does not produce the complete runHiC statistics
 Download the Linux executable as described in the [README](../README.md). The
 examples below assume it is named `rust-hic` in the current directory. See
 [building from source](building.md) for development and release builds.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `example-config` | Print the complete YAML example; use `--minimal` for required settings only. |
+| `run` | Run locally or submit a FASTQ workflow to Slurm. |
+| `run status` / `run cancel` | Inspect or cancel a submitted Slurm workflow. |
+| `index` | Build an index for paired gzip FASTQs. |
+| `map` | Map indexed FASTQs to one unsorted pairs file. |
+| `clean` | Sort, optionally filter, and deduplicate pairs. |
+| `matrix` | Build a multi-resolution matrix from cleaned pairs. |
+| `report` | Generate HTML and JSON reports for a completed run. |
+| `version` | Show the executable version. |
+
+Run `./rust-hic COMMAND --help` for arguments and options. Pairs inputs to
+`run`, `clean` and `matrix` must be uncompressed.
+
+## Prepare a reference
+
+The default built-in BWA-MEM3 aligner needs a reference FASTA, a two-column
+chromosome sizes file and an existing BWA-MEM2-compatible reference index. It
+can reuse an existing index; it does not build one itself. To prepare a new
+index and sizes file, for example:
+
+```sh
+bwa-mem2 index hg38.fa
+samtools faidx hg38.fa
+cut -f 1,2 hg38.fa.fai > hg38.chrom.sizes
+```
+
+`bwa-mem2` and `samtools` are external programs needed for these preparation
+commands. They are not needed to run the built-in aligner after the reference
+files have been created. In the example configuration, set `reference` and
+`aligner_index` to `hg38.fa`, and `chromsizes` to `hg38.chrom.sizes`. Use
+matching reference, index and chromosome files for the chosen assembly.
 
 ## Configure and run
 
@@ -31,7 +72,7 @@ defaults, including the built-in BWA-MEM3 aligner. Its reference index must be
 created beforehand; a BWA-MEM2-compatible index can be used. Restriction
 fragment filtering is disabled unless explicitly configured.
 
-For an annotated example of all available settings, use:
+For an annotated example of the available YAML settings, use:
 
 ```sh
 ./rust-hic example-config > config.yaml
@@ -41,7 +82,7 @@ The files are also available as [minimal](example.minimal.config.yaml) and
 [complete](example.config.yaml) examples. The complete example documents
 alternatives for pairs input and optional fragment filtering. Relative paths are
 resolved against the YAML file's directory. Run
-`./rust-hic run config.yaml --check` before starting the pipeline. This
+`./rust-hic run config.yaml --check` before starting a local pipeline. This
 checks settings, inputs, available aligner and index files, and whether the
 output parent and scratch directories can create temporary files. It reads the
 chromosome sizes and fragment BED, checks pairs headers and gzip signatures,
@@ -111,7 +152,9 @@ distance distributions, strand and pair-type composition, matrix balance
 status at each resolution, chunk details, and stage timings. Percentages name
 their denominator. Counts after aligner selection are not necessarily a mapping
 rate, and duplicates removed inside an aligner are not included in the pipeline
-deduplication count. Alignment and chunk preparation overlap in time.
+deduplication count. In local mode, alignment and chunk preparation overlap.
+In Slurm mode, chunk preparation follows the alignment array and total elapsed
+time includes scheduler waits.
 
 `report.json` contains the same statistics for downstream tools. Missing or
 unavailable values are `null`, not zero. A resolution with no usable balance
@@ -216,8 +259,8 @@ After `clean`, create a multi-resolution `.mcool` from the resulting pairs file:
 `matrix` bins and balances exactly the input records. It does not sort, filter,
 or remove duplicate pairs; use `clean` first. Set `--resolutions` to a
 comma-separated list of bin sizes in bases. Each must be a positive multiple of
-the first, which must be the smallest. Run `rust-hic matrix --help` for
-defaults and options.
+the first, which must be the smallest. The complete example configuration lists
+the default resolutions; run `rust-hic matrix --help` for options.
 
 The output must not exist. Intermediate files are created next to the output
 and removed after success. If processing fails, the workspace and stage logs
@@ -237,7 +280,8 @@ the `5unique` walk policy. These conversion options are not passed to BWA:
 
 For example, use `--min-mapq 10` to change the pairs conversion threshold; use
 `--aligner-arg "-T 30"` to pass `-T 30` to BWA itself. These conversion options
-do not apply to Chromap, which produces pairs directly. In a `run` configuration,
+do not apply to Chromap, which produces pairs directly; non-default SAM parsing
+options are rejected with Chromap. In a `run` configuration,
 set the corresponding `fastq.sam` fields `min_mapq`, `max_molecule_size`, and
 `max_inter_align_gap`.
 
@@ -390,9 +434,11 @@ The former experimental `fastq.index_backend` setting has been removed; delete
 it from older YAML configurations.
 The generated indexes retain checkpoints at approximately 64 MiB decoded intervals. During mapping,
 all aligners read and validate mate records in pairs, including their read IDs.
-For BWA, one worker thread per chunk reads both mates with rapidgzip, interleaves the records,
-and streams them to BWA in paired-input mode. A separate thread converts BWA's
-SAM output to pairs. For Chromap, one worker feeds both mate pipes with bounded
+For external BWA, one worker thread per chunk reads both mates with rapidgzip,
+interleaves the records, and streams them to BWA in paired-input mode. A
+separate thread converts BWA's SAM output to pairs. Built-in BWA-MEM3 reads
+paired records and converts its structured alignment fields directly to pairs.
+For Chromap, one worker feeds both mate pipes with bounded
 memory, and Chromap writes pairs directly. If Chromap consumes one mate substantially
 ahead of the other, the lagging input is temporarily buffered on disk in the
 mapping workspace. Allow enough free disk for up to one uncompressed mate per
@@ -444,7 +490,7 @@ rebuilding recovery points; interior paired IDs are validated when each chunk is
 Fix the reported problem and run it again; it does not reserve space or prevent
 files from changing after the check. A regular `run` performs the same
 preflight automatically. If the pipeline fails after creating its output
-directory, inspect `failure.json`, `events.jsonl`, stage logs, and the scratch
+directory, inspect `failure.json` if present, `events.jsonl`, stage logs, and the scratch
 path in `work-dir.txt`. Scratch is retained on failure.
 Choose a new output directory for a retry; existing outputs are not overwritten.
 

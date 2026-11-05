@@ -199,6 +199,7 @@ fn chunk_stats(out: &Path) -> Result<Vec<Chunk>> {
 }
 
 fn timings(out: &Path, fastq: bool) -> Result<Vec<Timing>> {
+    let distributed = out.join("slurm-jobs.json").is_file();
     let reader = BufReader::new(File::open(out.join("events.jsonl"))?);
     let mut events = BTreeMap::new();
     for line in reader.lines() {
@@ -220,7 +221,11 @@ fn timings(out: &Path, fastq: bool) -> Result<Vec<Timing>> {
         ("FASTQ index", "fastq_index_start", "fastq_index_done"),
         (
             if fastq {
-                "Alignment (overlaps chunk preparation)"
+                if distributed {
+                    "Alignment (Slurm array)"
+                } else {
+                    "Alignment (overlaps chunk preparation)"
+                }
             } else {
                 "Sort pairs"
             },
@@ -232,7 +237,20 @@ fn timings(out: &Path, fastq: bool) -> Result<Vec<Timing>> {
             if fastq { "alignment_done" } else { "sort_done" },
         ),
         (
-            "Alignment and chunk preparation",
+            if fastq && distributed {
+                "Chunk preparation (Slurm finish job)"
+            } else {
+                ""
+            },
+            "sort_start",
+            "sort_done",
+        ),
+        (
+            if distributed {
+                "Alignment through chunk preparation (includes waits)"
+            } else {
+                "Alignment and chunk preparation"
+            },
             "alignment_start",
             "sort_done",
         ),
@@ -246,6 +264,9 @@ fn timings(out: &Path, fastq: bool) -> Result<Vec<Timing>> {
         ("Compress and index pairs", "pairix_start", "pairix_done"),
     ];
     for (stage, start, end) in stages {
+        if stage.is_empty() {
+            continue;
+        }
         if let (Some(a), Some(b)) = (events.get(start), events.get(end)) {
             if b < a {
                 bail!("pipeline event {end} precedes {start}")
@@ -407,7 +428,15 @@ fn collect(out: &Path, c: &Config, elapsed_seconds: f64, contact_path: &Path) ->
         stats: filter,
     };
     let resolutions = matrix_resolutions(&out.join("contacts.mcool"), &c.resolutions)?;
-    let mut notes = vec!["Pairs entering downstream processing are not a standard mapping-rate measure; aligner-specific selection and filtering may already have occurred.".into(), "Timings for alignment and chunk preparation overlap and must not be added together.".into()];
+    let mut notes = vec!["Pairs entering downstream processing are not a standard mapping-rate measure; aligner-specific selection and filtering may already have occurred.".into()];
+    if out.join("slurm-jobs.json").is_file() {
+        notes.push("The Slurm alignment interval spans the first task start through the last task finish and can include scheduler waiting between tasks. The interval through chunk preparation also includes waiting for the finish job and any restriction digest. Total elapsed time includes queue waits.".into());
+    } else {
+        notes.push(
+            "Timings for alignment and chunk preparation overlap and must not be added together."
+                .into(),
+        );
+    }
     if resolutions.iter().any(|r| r.converged != Some(true)) {
         notes.push("At least one resolution did not converge or has no usable bins; inspect its balancing weights before using balanced values.".into());
     }

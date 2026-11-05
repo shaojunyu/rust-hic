@@ -221,7 +221,23 @@ pub(crate) fn check_pairs(path: &Path) -> Result<(Vec<String>, Format)> {
     read_header(&mut reader).with_context(|| format!("read pairs header {}", path.display()))
 }
 
-pub(super) fn prepare(mut c: Config, base: &Path, pairs_only: bool) -> Result<Config> {
+pub(super) fn prepare(c: Config, base: &Path, pairs_only: bool) -> Result<Config> {
+    prepare_with(c, base, pairs_only, true, true)
+}
+
+/// Submission checks paths and settings on the login node; index verification
+/// and compute-node CPU affinity are checked by the corresponding jobs.
+pub(super) fn prepare_for_submission(c: Config, base: &Path) -> Result<Config> {
+    prepare_with(c, base, false, false, false)
+}
+
+fn prepare_with(
+    mut c: Config,
+    base: &Path,
+    pairs_only: bool,
+    verify_index: bool,
+    check_affinity: bool,
+) -> Result<Config> {
     if c.assembly.trim().is_empty() || c.assembly.contains(['\r', '\n']) {
         bail!("assembly must be a non-empty single line");
     }
@@ -260,7 +276,9 @@ pub(super) fn prepare(mut c: Config, base: &Path, pairs_only: bool) -> Result<Co
     if !(1..=10000).contains(&c.balance_max_iterations) {
         bail!("balance_max_iterations must be between 1 and 10000");
     }
-    affinity_mask(r.postprocess_cpus.as_deref())?;
+    if check_affinity {
+        affinity_mask(r.postprocess_cpus.as_deref())?;
+    }
     validate_resolutions(&c.resolutions)?;
     c.chromsizes = input_file(base, &c.chromsizes, "chromosome sizes")?;
     let sizes = validate_chromsizes(&c.chromsizes, (!pairs_only).then_some(c.resolutions[0]))?;
@@ -321,8 +339,10 @@ pub(super) fn prepare(mut c: Config, base: &Path, pairs_only: bool) -> Result<Co
         })?;
         if let Some(index) = &fastq.index_dir {
             align::validate_reusable_index(fastq, index)?;
-            crate::fastq_index::verify(index, 1)
-                .with_context(|| format!("verify reusable FASTQ index {}", index.display()))?;
+            if verify_index {
+                crate::fastq_index::verify(index, 1)
+                    .with_context(|| format!("verify reusable FASTQ index {}", index.display()))?;
+            }
         }
     }
     if let Some(digest) = &mut c.digest {

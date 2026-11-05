@@ -177,7 +177,7 @@ fn build_matrix(
     let chromsizes = fs::canonicalize(chromsizes).context("open chromosome sizes")?;
     let logs = work.join("result");
     fs::create_dir(&logs)?;
-    let started = std::time::Instant::now();
+    let started = crate::workflow::RunClock::new();
     crate::workflow::log(&logs, "cool_start", started)?;
     let base = work.join("base.cool");
     let mut first = crate::stage::stage_command(crate::stage::Stage::BinPairs)?;

@@ -42,12 +42,10 @@ fn main() {
             output,
             recompute_contact_stats,
         }) => workflow::report::regenerate(&result_dir, output.as_deref(), recompute_contact_stats),
-        Some(cli::Command::Run {
-            config,
-            check,
-            keep_pairs,
-            keep_bam,
-        }) => workflow::run(&config, check, keep_pairs, keep_bam),
+        Some(cli::Command::Run(args)) => cli::run::execute(*args),
+        Some(cli::Command::SlurmTask { phase, work, chunk }) => {
+            workflow::slurm::task(&phase, &work, chunk)
+        }
         Some(cli::Command::Index(args)) => cli::index::run(args),
         Some(cli::Command::Map(args)) => cli::map::run(args),
         Some(cli::Command::Clean(args)) => cli::postprocess::clean(args),

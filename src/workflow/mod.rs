@@ -6,6 +6,7 @@ pub(crate) mod pairix;
 pub(crate) mod preflight;
 pub(crate) mod process;
 pub(crate) mod report;
+pub(crate) mod slurm;
 pub(crate) mod stage;
 
 use crate::mapping::align;
@@ -23,10 +24,34 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
-pub(crate) fn log(dir: &Path, event: &str, start: Instant) -> Result<()> {
+/// Monotonic within this process, with an offset for jobs started earlier.
+#[derive(Clone, Copy)]
+pub(super) struct RunClock {
+    start: Instant,
+    offset: Duration,
+}
+impl RunClock {
+    pub(crate) fn new() -> Self {
+        Self {
+            start: Instant::now(),
+            offset: Duration::ZERO,
+        }
+    }
+    fn with_offset(offset: Duration) -> Self {
+        Self {
+            start: Instant::now(),
+            offset,
+        }
+    }
+    fn elapsed(self) -> Duration {
+        self.offset.saturating_add(self.start.elapsed())
+    }
+}
+
+pub(crate) fn log(dir: &Path, event: &str, start: RunClock) -> Result<()> {
     let record = serde_json::json!({"event":event,"elapsed_seconds":start.elapsed().as_secs_f64()});
     let mut f = OpenOptions::new()
         .create(true)
@@ -80,7 +105,7 @@ pub(crate) fn run_config(
     retain_scratch: bool,
     pairs_only: bool,
 ) -> Result<()> {
-    let started = Instant::now();
+    let started = RunClock::new();
     let mut c = preflight::prepare(c, base, pairs_only)?;
     let r = c.resources.clone();
     let postprocess_cpus = affinity_mask(r.postprocess_cpus.as_deref())?;
@@ -178,90 +203,16 @@ pub(crate) fn run_config(
             log(&out, "sort_done", started)?;
             Arc::try_unwrap(paths).unwrap()
         };
-        log(&out, "merge_filter_dedup_start", started)?;
-        let mut merger = stage_command(Stage::MergePairs)?;
-        merger
-            .arg(r.merge_workers.to_string())
-            .arg(c.merge_scratch_dir.as_ref().unwrap_or(&c.scratch_dir))
-            .args(&sorted);
-        let mut cmds = vec![("merge".into(), merger)];
-        if let Some(bed) = c.fragments.as_ref().filter(|_| !prefiltered) {
-            let mut f = stage_command(Stage::FilterPairs)?;
-            f.arg(bed).arg(out.join("filter-stats.json"));
-            cmds.push(("filter".into(), f))
-        }
-        let mut d = stage_command(Stage::DedupPairs)?;
-        d.arg(r.dedup_workers.to_string())
-            .arg(c.dedup_max_mismatch.to_string());
-        cmds.push(("dedup".into(), d));
-        if !pairs_only {
-            let mut stats = stage_command(Stage::PairsStats)?;
-            stats.arg(out.join("contact-stats.json"));
-            cmds.push(("contact".into(), stats));
-        }
-        let pairs = if pairs_only || c.keep_pairs {
-            out.join("filtered-nodups.pairs")
-        } else {
-            work.join("filtered-nodups.pairs")
-        };
-        pipe(cmds, &pairs, &out, postprocess_cpus.as_ref())?;
-        log(&out, "merge_filter_dedup_done", started)?;
-        if !pairs_only {
-            log(&out, "cool_start", started)?;
-            let base_cool = work.join("base.cool");
-            let mut cmd = stage_command(Stage::BinPairs)?;
-            cmd.arg(&c.chromsizes)
-                .arg(c.resolutions[0].to_string())
-                .arg(&c.assembly)
-                .arg(&pairs)
-                .arg(&base_cool)
-                .arg(&work)
-                .arg(r.matrix_threads.to_string());
-            exec(cmd, &out, "pairs-to-cool", postprocess_cpus.as_ref())?;
-            log(&out, "cool_done", started)?;
-            log(&out, "mcool_start", started)?;
-            let mut cmd = stage_command(Stage::BuildMcool)?;
-            cmd.arg(&base_cool)
-                .arg(&c.chromsizes)
-                .arg(out.join("contacts.mcool"))
-                .arg(&c.assembly)
-                .arg(
-                    c.resolutions
-                        .iter()
-                        .map(u64::to_string)
-                        .collect::<Vec<_>>()
-                        .join(","),
-                )
-                .arg(r.matrix_threads.to_string())
-                .env(
-                    crate::matrix::BALANCE_MAX_ITERS_ENV,
-                    c.balance_max_iterations.to_string(),
-                );
-            exec(cmd, &out, "cool-to-mcool", postprocess_cpus.as_ref())?;
-            log(&out, "mcool_done", started)?;
-            if c.compressed_pairs {
-                log(&out, "pairix_start", started)?;
-                let original_affinity = if let Some(mask) = &postprocess_cpus {
-                    let original = current_affinity()?;
-                    set_affinity(mask)?;
-                    Some(original)
-                } else {
-                    None
-                };
-                let result = pairix::pack(
-                    &pairs,
-                    &out.join("filtered-nodups.pairs.gz"),
-                    r.compression_threads,
-                    Some(&out.join("pairix.log")),
-                );
-                let restored = original_affinity.as_ref().map(set_affinity).transpose();
-                result?;
-                restored?;
-                log(&out, "pairix_done", started)?;
-            }
-            report::generate(&out, &c, started.elapsed().as_secs_f64())?;
-            eprintln!("report: {}", out.join("report.html").display());
-        }
+        finish_stages(
+            &c,
+            &work,
+            &out,
+            &sorted,
+            prefiltered,
+            pairs_only,
+            started,
+            &postprocess_cpus,
+        )?;
         if retain_scratch {
             fs::remove_dir_all(&work).with_context(|| {
                 format!("remove completed scratch workspace {}", work.display())
@@ -284,4 +235,103 @@ pub(crate) fn run_config(
         let _ = log(&out, "pipeline_failed", started);
     }
     outcome
+}
+
+#[allow(clippy::too_many_arguments)] // Shared workflow state for local and distributed execution.
+pub(super) fn finish_stages(
+    c: &Config,
+    work: &Path,
+    out: &Path,
+    sorted: &[PathBuf],
+    prefiltered: bool,
+    pairs_only: bool,
+    started: RunClock,
+    postprocess_cpus: &Option<libc::cpu_set_t>,
+) -> Result<()> {
+    let r = c.resources.clone();
+    log(out, "merge_filter_dedup_start", started)?;
+    let mut merger = stage_command(Stage::MergePairs)?;
+    merger
+        .arg(r.merge_workers.to_string())
+        .arg(c.merge_scratch_dir.as_ref().unwrap_or(&c.scratch_dir))
+        .args(sorted);
+    let mut cmds = vec![("merge".into(), merger)];
+    if let Some(bed) = c.fragments.as_ref().filter(|_| !prefiltered) {
+        let mut f = stage_command(Stage::FilterPairs)?;
+        f.arg(bed).arg(out.join("filter-stats.json"));
+        cmds.push(("filter".into(), f))
+    }
+    let mut d = stage_command(Stage::DedupPairs)?;
+    d.arg(r.dedup_workers.to_string())
+        .arg(c.dedup_max_mismatch.to_string());
+    cmds.push(("dedup".into(), d));
+    if !pairs_only {
+        let mut stats = stage_command(Stage::PairsStats)?;
+        stats.arg(out.join("contact-stats.json"));
+        cmds.push(("contact".into(), stats));
+    }
+    let pairs = if pairs_only || c.keep_pairs {
+        out.join("filtered-nodups.pairs")
+    } else {
+        work.join("filtered-nodups.pairs")
+    };
+    pipe(cmds, &pairs, out, postprocess_cpus.as_ref())?;
+    log(out, "merge_filter_dedup_done", started)?;
+    if !pairs_only {
+        log(out, "cool_start", started)?;
+        let base_cool = work.join("base.cool");
+        let mut cmd = stage_command(Stage::BinPairs)?;
+        cmd.arg(&c.chromsizes)
+            .arg(c.resolutions[0].to_string())
+            .arg(&c.assembly)
+            .arg(&pairs)
+            .arg(&base_cool)
+            .arg(work)
+            .arg(r.matrix_threads.to_string());
+        exec(cmd, out, "pairs-to-cool", postprocess_cpus.as_ref())?;
+        log(out, "cool_done", started)?;
+        log(out, "mcool_start", started)?;
+        let mut cmd = stage_command(Stage::BuildMcool)?;
+        cmd.arg(&base_cool)
+            .arg(&c.chromsizes)
+            .arg(out.join("contacts.mcool"))
+            .arg(&c.assembly)
+            .arg(
+                c.resolutions
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+            .arg(r.matrix_threads.to_string())
+            .env(
+                crate::matrix::BALANCE_MAX_ITERS_ENV,
+                c.balance_max_iterations.to_string(),
+            );
+        exec(cmd, out, "cool-to-mcool", postprocess_cpus.as_ref())?;
+        log(out, "mcool_done", started)?;
+        if c.compressed_pairs {
+            log(out, "pairix_start", started)?;
+            let original_affinity = if let Some(mask) = &postprocess_cpus {
+                let original = current_affinity()?;
+                set_affinity(mask)?;
+                Some(original)
+            } else {
+                None
+            };
+            let result = pairix::pack(
+                &pairs,
+                &out.join("filtered-nodups.pairs.gz"),
+                r.compression_threads,
+                Some(&out.join("pairix.log")),
+            );
+            let restored = original_affinity.as_ref().map(set_affinity).transpose();
+            result?;
+            restored?;
+            log(out, "pairix_done", started)?;
+        }
+        report::generate(out, c, started.elapsed().as_secs_f64())?;
+        eprintln!("report: {}", out.join("report.html").display());
+    }
+    Ok(())
 }

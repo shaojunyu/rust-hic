@@ -2,6 +2,7 @@
 pub(crate) mod index;
 pub(crate) mod map;
 pub(crate) mod postprocess;
+pub(crate) mod run;
 
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -17,7 +18,7 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// Print an example YAML configuration to standard output.
     ExampleConfig {
-        /// Print only the required settings; omit to show all available settings.
+        /// Print only required settings; omit to show all YAML settings.
         #[arg(long)]
         minimal: bool,
     },
@@ -25,29 +26,21 @@ pub(crate) enum Command {
     Report {
         /// Directory containing a completed run.
         result_dir: PathBuf,
-        /// Existing output directory; defaults to the run directory.
+        /// Existing output directory; reports must not already exist (default: run directory).
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// Re-read final pairs to calculate detailed contact distributions.
+        /// Re-read retained uncompressed pairs to calculate detailed contact distributions.
         #[arg(long)]
         recompute_contact_stats: bool,
     },
-    /// Run the pipeline from a YAML configuration.
-    #[command(
-        after_help = "Create a minimal example with: rust-hic example-config --minimal > config.yaml\nOmit --minimal for the complete example."
-    )]
-    Run {
-        /// YAML configuration file.
-        config: PathBuf,
-        /// Check inputs and configuration without running the pipeline.
-        #[arg(long)]
-        check: bool,
-        /// Retain the final sorted, filtered and deduplicated pairs file.
-        #[arg(long)]
-        keep_pairs: bool,
-        /// Retain all aligner-emitted records in one unsorted BAM file.
-        #[arg(long)]
-        keep_bam: bool,
+    /// Run the pipeline locally or submit it to Slurm.
+    Run(Box<run::RunArgs>),
+    /// Internal Slurm worker; invoked by submitted jobs.
+    #[command(hide = true)]
+    SlurmTask {
+        phase: String,
+        work: PathBuf,
+        chunk: Option<usize>,
     },
     /// Build an index for paired gzip FASTQ files.
     #[command(
@@ -65,6 +58,9 @@ pub(crate) enum Command {
     )]
     Clean(CleanArgs),
     /// Build a multi-resolution matrix from cleaned pairs.
+    #[command(
+        after_help = "Input pairs must be uncompressed. Default resolutions are listed in the complete example configuration."
+    )]
     Matrix(MatrixArgs),
     /// Show version information.
     Version,
@@ -137,7 +133,7 @@ pub(crate) struct MapArgs {
 
 #[derive(Args)]
 pub(crate) struct CleanArgs {
-    /// Input pairs files.
+    /// Input uncompressed pairs files.
     #[arg(required = true)]
     pub inputs: Vec<PathBuf>,
     /// Chromosome names and lengths.
@@ -162,7 +158,7 @@ pub(crate) struct CleanArgs {
 
 #[derive(Args)]
 pub(crate) struct MatrixArgs {
-    /// Cleaned pairs file.
+    /// Cleaned, uncompressed pairs file.
     pub input: PathBuf,
     /// Chromosome names and lengths.
     #[arg(long)]

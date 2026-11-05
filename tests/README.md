@@ -46,6 +46,14 @@ the test reference index and is skipped if it is unavailable.
 filtering overlap mapping, match sequential processing and keep deduplication
 global. It also checks that a failed chunk stops the workflow.
 
+`tests/test_slurm.py` uses a local Slurm command stub to exercise submission,
+task failures and retries, shared chunk publication, scheduler cancellation,
+and comparison with the local pipeline. It requires `h5py`, `numpy`, and
+`bwa-mem2`; the Chromap case additionally requires `chromap`, and BAM is checked
+with `samtools` when available. The test looks in `envs/runhic/bin` by default;
+set `RUST_HIC_BWA_MEM2`, `RUST_HIC_CHROMAP`, or `RUST_HIC_SAMTOOLS` to select
+other executable paths.
+
 `tests/test_bam_retention.py` checks optional unsorted BAM retention for
 BWA-MEM3, BWA-MEM2 and Chromap across concurrent chunks, compares pairs and
 matrix outputs, and checks Chromap's emitted SAM records against the BAM. It
