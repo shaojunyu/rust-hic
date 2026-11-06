@@ -4,11 +4,49 @@ pub(crate) mod map;
 pub(crate) mod postprocess;
 pub(crate) mod run;
 
-use clap::{Args, Parser, Subcommand};
-use std::path::PathBuf;
+use clap::{builder::StyledStr, Args, Parser, Subcommand};
+use std::{fmt::Write, path::PathBuf};
+
+fn push_help_heading(help: &mut StyledStr, heading: &str) {
+    let styles = clap::builder::styling::Styles::styled();
+    let style = styles.get_header();
+    write!(help, "{}{heading}{}", style.render(), style.render_reset())
+        .expect("writing to StyledStr cannot fail");
+}
+
+fn examples_help(description: &str, examples: &str) -> StyledStr {
+    let mut help = StyledStr::new();
+    if !description.is_empty() {
+        help.push_str(description);
+        help.push_str("\n\n");
+    }
+    push_help_heading(&mut help, "Examples:");
+    help.push_str("\n");
+    help.push_str(examples);
+    help
+}
+
+fn root_help() -> StyledStr {
+    let mut help = examples_help(
+        "",
+        "  rust-hic help index\n  rust-hic run config.yaml --check",
+    );
+    help.push_str("\n\n");
+    push_help_heading(&mut help, "Project information:");
+    help.push_str(concat!(
+        "\n  For documentation and updates, or to report bugs, visit:\n",
+        "  https://github.com/shaojunyu/rust-hic"
+    ));
+    help
+}
 
 #[derive(Parser)]
-#[command(name = "rust-hic", version, about = "Hi-C processing pipeline")]
+#[command(
+    name = "rust-hic",
+    version,
+    about = "Hi-C processing pipeline",
+    after_help = root_help()
+)]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -17,21 +55,19 @@ pub(crate) struct Cli {
 #[derive(Subcommand)]
 pub(crate) enum Command {
     /// Print an example YAML configuration to standard output.
+    #[command(
+        after_help = examples_help(
+            "",
+            concat!(
+                "  rust-hic example-config --minimal > config.yaml\n",
+                "  rust-hic example-config > config-full.yaml"
+            )
+        )
+    )]
     ExampleConfig {
         /// Print only required settings; omit to show all YAML settings.
         #[arg(long)]
         minimal: bool,
-    },
-    /// Generate an HTML and JSON report from a completed run.
-    Report {
-        /// Directory containing a completed run.
-        result_dir: PathBuf,
-        /// Existing output directory; reports must not already exist (default: run directory).
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-        /// Re-read retained uncompressed pairs to calculate detailed contact distributions.
-        #[arg(long)]
-        recompute_contact_stats: bool,
     },
     /// Run the pipeline locally or submit it to Slurm.
     Run(Box<run::RunArgs>),
@@ -44,25 +80,50 @@ pub(crate) enum Command {
     },
     /// Build an index for paired gzip FASTQ files.
     #[command(
-        after_help = "Boundaries are aligned on read IDs. Chunk size accepts bytes, MB, GB, MiB and GiB. Relative paths use the current directory."
+        after_help = examples_help(
+            concat!(
+                "Boundaries are aligned on read IDs. Chunk size accepts bytes, MB, GB, MiB\n",
+                "and GiB. Relative paths use the current directory."
+            ),
+            concat!(
+                "  rust-hic index R1.fastq.gz R2.fastq.gz -o fastq-index\n",
+                "  rust-hic index R1.fastq.gz R2.fastq.gz --chunks 8 -o fastq-index-8"
+            )
+        )
     )]
     Index(IndexArgs),
     /// Map indexed paired FASTQ reads to one unsorted pairs file.
     #[command(
-        after_help = "Built-in bwa-mem3 uses a bwa-mem2 index and supports -k, -w, -T, -A, -B and -c through --aligner-arg. Failed runs retain temporary files and logs."
+        after_help = examples_help(
+            concat!(
+                "Built-in bwa-mem3 uses a bwa-mem2 index and supports -k, -w, -T, -A, -B,\n",
+                "and -c through --aligner-arg. Failed runs retain temporary files and logs."
+            ),
+            concat!(
+                "  rust-hic map fastq-index -r ref.fa -x ref.fa -o mapped.pairs\n",
+                "  rust-hic map fastq-index -r ref.fa -x ref.fa --chunk 0 -o chunk-0.pairs"
+            )
+        )
     )]
     Map(MapArgs),
     /// Sort, filter and deduplicate pairs.
     #[command(
-        after_help = "Without --fragments, restriction filtering is skipped. --threads is per stage, not a global CPU limit."
+        after_help = examples_help(
+            "Without --fragments, restriction filtering is skipped.\n--threads is per stage, not a global CPU limit.",
+            "  rust-hic clean input.pairs --chromsizes chrom.sizes -o clean.pairs"
+        )
     )]
     Clean(CleanArgs),
     /// Build a multi-resolution matrix from cleaned pairs.
     #[command(
-        after_help = "Input pairs must be uncompressed. Default resolutions are listed in the complete example configuration."
+        after_help = examples_help(
+            "Input pairs must be uncompressed.\nDefault resolutions are listed in the complete example configuration.",
+            "  rust-hic matrix clean.pairs --chromsizes chrom.sizes -o contacts.mcool"
+        )
     )]
     Matrix(MatrixArgs),
     /// Show version information.
+    #[command(after_help = examples_help("", "  rust-hic version"))]
     Version,
 }
 

@@ -148,10 +148,10 @@ class ExampleConfigTests(unittest.TestCase):
         self.assertIsNone(report['restriction']['stats'])
         dest = self.work / 'regenerated'
         dest.mkdir()
-        result = command(BIN, 'report', self.work / 'new-result', '--output', dest)
+        result = command(BIN, 'run', 'report', self.work / 'new-result', '--output', dest)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads((dest / 'report.json').read_text())['counts'], report['counts'])
-        result = command(BIN, 'report', self.work / 'new-result', '--output', dest)
+        result = command(BIN, 'run', 'report', self.work / 'new-result', '--output', dest)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('already exists', result.stderr)
         # Older run outputs lack the detailed distributions; never invent them.
@@ -162,13 +162,13 @@ class ExampleConfigTests(unittest.TestCase):
         stats_path.write_text(json.dumps(stats))
         old_dest = self.work / 'old-report'
         old_dest.mkdir()
-        result = command(BIN, 'report', self.work / 'new-result', '--output', old_dest)
+        result = command(BIN, 'run', 'report', self.work / 'new-result', '--output', old_dest)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIsNone(json.loads((old_dest / 'report.json').read_text())['counts']['cis_distance_bins'])
         self.assertIn('were not recorded', (old_dest / 'report.html').read_text())
         recalc_dest = self.work / 'recalculated'
         recalc_dest.mkdir()
-        result = command(BIN, 'report', self.work / 'new-result', '--output', recalc_dest,
+        result = command(BIN, 'run', 'report', self.work / 'new-result', '--output', recalc_dest,
                          '--recompute-contact-stats')
         self.assertEqual(result.returncode, 0, result.stderr)
         recalculated = json.loads((recalc_dest / 'report.json').read_text())
@@ -224,7 +224,7 @@ class ExampleConfigTests(unittest.TestCase):
             if not retain:
                 target = self.work / 'recompute-without-pairs'
                 target.mkdir()
-                result = command(BIN, 'report', out, '--output', target, '--recompute-contact-stats')
+                result = command(BIN, 'run', 'report', out, '--output', target, '--recompute-contact-stats')
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('final pairs were not retained', result.stderr)
         invalid = self.work / 'pairs-bam.json'

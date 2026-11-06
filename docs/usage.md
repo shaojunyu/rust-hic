@@ -30,11 +30,11 @@ examples below assume it is named `rust-hic` in the current directory. See
 | `example-config` | Print the complete YAML example; use `--minimal` for required settings only. |
 | `run` | Run locally or submit a FASTQ workflow to Slurm. |
 | `run status` / `run cancel` | Inspect or cancel a submitted Slurm workflow. |
+| `run report` | Generate HTML and JSON reports for a completed run. |
 | `index` | Build an index for paired gzip FASTQs. |
 | `map` | Map indexed FASTQs to one unsorted pairs file. |
 | `clean` | Sort, optionally filter, and deduplicate pairs. |
 | `matrix` | Build a multi-resolution matrix from cleaned pairs. |
-| `report` | Generate HTML and JSON reports for a completed run. |
 | `version` | Show the executable version. |
 
 Run `./rust-hic COMMAND --help` for arguments and options. Pairs inputs to
@@ -167,7 +167,7 @@ directory for the two report files:
 
 ```sh
 mkdir report-output
-./rust-hic report existing-result --output report-output
+./rust-hic run report existing-result --output report-output
 ```
 
 Older runs did not record distance, strand and pair-type distributions; these

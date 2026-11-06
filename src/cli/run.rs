@@ -8,7 +8,14 @@ use std::path::PathBuf;
 #[command(
     args_conflicts_with_subcommands = true,
     subcommand_negates_reqs = true,
-    after_help = "Create a minimal example with: rust-hic example-config --minimal > config.yaml\nOmit --minimal for the complete example. Slurm mode requires shared FASTQ, reference and scratch paths."
+    after_help = super::examples_help(
+        concat!(
+            "Create a minimal example with: rust-hic example-config --minimal > config.yaml\n",
+            "Omit --minimal for the complete example.\n",
+            "Slurm mode requires shared FASTQ, reference and scratch paths."
+        ),
+        "  rust-hic run config.yaml\n  rust-hic run config.yaml --mode slurm"
+    )
 )]
 pub(crate) struct RunArgs {
     /// YAML workflow configuration file.
@@ -40,12 +47,26 @@ enum RunMode {
 
 #[derive(Subcommand)]
 enum RunAction {
+    /// Generate an HTML and JSON report from a completed run.
+    #[command(after_help = super::examples_help("", "  rust-hic run report result-dir --output report-output"))]
+    Report {
+        /// Directory containing a completed run.
+        result_dir: PathBuf,
+        /// Existing output directory; reports must not already exist (default: run directory).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Re-read retained uncompressed pairs to calculate detailed contact distributions.
+        #[arg(long)]
+        recompute_contact_stats: bool,
+    },
     /// Show the progress and scheduler states of a submitted Slurm run.
+    #[command(after_help = super::examples_help("", "  rust-hic run status result-dir"))]
     Status {
         /// Output directory of the submitted Slurm workflow.
         output_dir: PathBuf,
     },
     /// Cancel the recorded active jobs of a Slurm run.
+    #[command(after_help = super::examples_help("", "  rust-hic run cancel result-dir"))]
     Cancel {
         /// Output directory of the submitted Slurm workflow.
         output_dir: PathBuf,
@@ -101,6 +122,15 @@ pub(crate) struct SlurmOptions {
 pub(crate) fn execute(args: RunArgs) -> Result<()> {
     if let Some(action) = args.action {
         return match action {
+            RunAction::Report {
+                result_dir,
+                output,
+                recompute_contact_stats,
+            } => workflow::report::regenerate(
+                &result_dir,
+                output.as_deref(),
+                recompute_contact_stats,
+            ),
             RunAction::Status { output_dir } => workflow::slurm::status(&output_dir),
             RunAction::Cancel { output_dir } => workflow::slurm::cancel(&output_dir),
         };
@@ -155,6 +185,17 @@ mod tests {
         assert!(args.check);
         assert!(Cli::try_parse_from(["rust-hic", "run", "status", "result"]).is_ok());
         assert!(Cli::try_parse_from(["rust-hic", "run", "cancel", "result"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "rust-hic",
+            "run",
+            "report",
+            "result",
+            "--output",
+            "reports",
+            "--recompute-contact-stats",
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from(["rust-hic", "report", "result"]).is_err());
         assert!(Cli::try_parse_from(["rust-hic", "run"]).is_err());
         assert!(
             Cli::try_parse_from(["rust-hic", "run", "config.yaml", "--mode", "other"]).is_err()

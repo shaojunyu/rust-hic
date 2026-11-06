@@ -37,11 +37,6 @@ fn main() {
                 include_bytes!("../docs/example.config.yaml")
             })
             .map_err(Into::into),
-        Some(cli::Command::Report {
-            result_dir,
-            output,
-            recompute_contact_stats,
-        }) => workflow::report::regenerate(&result_dir, output.as_deref(), recompute_contact_stats),
         Some(cli::Command::Run(args)) => cli::run::execute(*args),
         Some(cli::Command::SlurmTask { phase, work, chunk }) => {
             workflow::slurm::task(&phase, &work, chunk)
