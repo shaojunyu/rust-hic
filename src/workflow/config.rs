@@ -81,11 +81,16 @@ pub(crate) struct Config {
     pub(crate) resources: Resources,
     #[serde(default = "resolutions")]
     pub(crate) resolutions: Vec<u64>,
+    #[serde(default = "enabled")]
+    pub(crate) sort_chromosomes: bool,
     #[serde(default = "iterations")]
     pub(crate) balance_max_iterations: usize,
 }
 pub(crate) fn dedup_max_mismatch() -> i64 {
     3
+}
+fn enabled() -> bool {
+    true
 }
 pub(crate) fn resolutions() -> Vec<u64> {
     vec![

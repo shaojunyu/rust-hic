@@ -11,7 +11,7 @@ use std::{
     collections::{BinaryHeap, HashMap},
     env,
     fs::{self, File as StdFile},
-    io::{self, BufRead, BufReader, BufWriter, Read, Write},
+    io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     sync::mpsc::{sync_channel, SyncSender},
     thread,
@@ -213,22 +213,12 @@ fn run() -> Result<()> {
     let mut chroms = Vec::new();
     let mut lookup = HashMap::new();
     let mut offset = 0u64;
-    for l in BufReader::new(StdFile::open(&args[1])?).lines() {
-        let l = l?;
-        let f: Vec<_> = l.split_whitespace().collect();
-        if f.is_empty() {
-            continue;
-        }
-        if f.len() != 2 {
-            bail!("invalid chromosome sizes")
-        };
-        let len: u64 = f[1].parse()?;
-        if len == 0 || len > i32::MAX as u64 || lookup.contains_key(f[0]) {
-            bail!("invalid chromosome")
-        };
-        lookup.insert(f[0].to_owned(), chroms.len());
+    let sort = env::var(super::SORT_CHROMOSOMES_ENV).as_deref() != Ok("0");
+    for c in super::read_chromosomes(Path::new(&args[1]), sort)? {
+        let len = c.len;
+        lookup.insert(c.name.clone(), chroms.len());
         chroms.push(Chrom {
-            name: f[0].into(),
+            name: c.name,
             len,
             offset,
         });

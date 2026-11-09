@@ -288,6 +288,7 @@ pub(super) fn finish_stages(
             .arg(&base_cool)
             .arg(work)
             .arg(r.matrix_threads.to_string());
+        crate::matrix::chromosome_options(&mut cmd, c.sort_chromosomes);
         exec(cmd, out, "pairs-to-cool", postprocess_cpus.as_ref())?;
         log(out, "cool_done", started)?;
         log(out, "mcool_start", started)?;
@@ -308,6 +309,7 @@ pub(super) fn finish_stages(
                 crate::matrix::BALANCE_MAX_ITERS_ENV,
                 c.balance_max_iterations.to_string(),
             );
+        crate::matrix::chromosome_options(&mut cmd, c.sort_chromosomes);
         exec(cmd, out, "cool-to-mcool", postprocess_cpus.as_ref())?;
         log(out, "mcool_done", started)?;
         if c.compressed_pairs {

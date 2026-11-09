@@ -213,6 +213,131 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(dataset.shape, (0,))
                 self.assertEqual(dataset.compression, 'gzip')
 
+    def test_04_matrix_chromosome_order(self):
+        """Matrix sorting preserves every contig and its contacts."""
+        chromsizes = self.work / 'human.chrom.sizes'
+        names = ('chr10', 'chrUn_10', 'chrUn_2', 'chr02', 'chr2', 'chrM', 'chr1',
+                 'chr14_GL000009v2_random', 'chrY', 'chrX')
+        chromsizes.write_text(''.join(f'{name}\t1000\n' for name in names))
+        pairs = self.work / 'human.pairs'
+        pairs.write_text(
+            '## pairs format v1.0.0\n'
+            '#columns: readID chrom1 pos1 chrom2 pos2 strand1 strand2 pair_type\n'
+            'a\tchr10\t100\tchr2\t200\t+\t-\tUU\n'
+            'b\tchr1\t100\tchrM\t300\t+\t-\tUU\n'
+            'c\tchr1\t100\tchrUn_10\t200\t+\t-\tUU\n'
+            'd\tchr14_GL000009v2_random\t100\tchr10\t200\t+\t-\tUU\n'
+        )
+        sorted_names = ['chr1', 'chr2', 'chr02', 'chr10', 'chrX', 'chrY', 'chrM',
+                        'chr14_GL000009v2_random', 'chrUn_2', 'chrUn_10']
+        config = self.work / 'human.json'
+        for sort, expected in ((True, sorted_names), (False, list(names))):
+            matrix = self.work / f'human-{sort}.mcool'
+            args = [] if sort else ['--no-sort-chromosomes']
+            run(BINARY, 'matrix', pairs, '--chromsizes', chromsizes, '--assembly', 'hg38',
+                '--resolutions', '100,200', '--threads', '2', *args, '-o', matrix)
+            output = self.work / f'human-run-{sort}'
+            config_data = {
+                'assembly': 'hg38', 'chromsizes': str(chromsizes),
+                'input_pairs': [str(pairs)], 'output_dir': str(output),
+                'scratch_dir': str(self.work), 'keep_pairs': True,
+                'resolutions': [100, 200], 'balance_max_iterations': 1,
+            }
+            if not sort:
+                config_data['sort_chromosomes'] = False
+            config.write_text(json.dumps(config_data))
+            run(BINARY, 'run', config)
+            self.assertEqual(len(pair_rows(output / 'filtered-nodups.pairs')), 4)
+            for path in (matrix, output / 'contacts.mcool'):
+                with h5py.File(path, 'r') as f:
+                    for resolution in ('100', '200'):
+                        group = f[f'resolutions/{resolution}']
+                        chroms = [name.decode() for name in group['chroms/name'][:]]
+                        self.assertEqual(chroms, expected)
+                        self.assertEqual(int(group['pixels/count'][:].sum()), 4)
+                        bin_chrom, starts = group['bins/chrom'][:], group['bins/start'][:]
+                        actual = {}
+                        for a, b, count in zip(group['pixels/bin1_id'][:], group['pixels/bin2_id'][:],
+                                               group['pixels/count'][:]):
+                            key = tuple(sorted(((chroms[bin_chrom[a]], int(starts[a])),
+                                                (chroms[bin_chrom[b]], int(starts[b])))))
+                            actual[key] = int(count)
+                        res = int(resolution)
+                        expected_pairs = [('chr10', 100, 'chr2', 200), ('chr1', 100, 'chrM', 300),
+                                          ('chr1', 100, 'chrUn_10', 200),
+                                          ('chr14_GL000009v2_random', 100, 'chr10', 200)]
+                        expected_pixels = {
+                            tuple(sorted(((a, (p - 1) // res * res), (b, (q - 1) // res * res)))): 1
+                            for a, p, b, q in expected_pairs
+                        }
+                        self.assertEqual(actual, expected_pixels)
+
+        invalid = self.work / 'unknown-contig.pairs'
+        invalid.write_text(pairs.read_text() + 'e\tchr1\t100\tchrMissing\t200\t+\t-\tUU\n')
+        result = run(BINARY, 'matrix', invalid, '--chromsizes', chromsizes, '--assembly', 'hg38',
+                     '--resolutions', '100', '-o', self.work / 'invalid-contig.mcool',
+                     expect_success=False)
+        self.assertIn('unknown chromosome chrMissing', result.stderr)
+
+        # Custom assemblies with only scaffold names are valid too.
+        sizes = self.work / 'scaffold.chrom.sizes'
+        sizes.write_text('scaffold_10\t1000\nscaffold_2\t1000\n')
+        scaffold_pairs = self.work / 'scaffold.pairs'
+        scaffold_pairs.write_text('## pairs format v1.0.0\n'
+                                  '#columns: readID chrom1 pos1 chrom2 pos2 strand1 strand2 pair_type\n'
+                                  'x\tscaffold_10\t10\tscaffold_2\t20\t+\t-\tUU\n')
+        path = self.work / 'scaffold.mcool'
+        run(BINARY, 'matrix', scaffold_pairs, '--chromsizes', sizes,
+            '--resolutions', '100', '-o', path)
+        with h5py.File(path, 'r') as f:
+            group = f['resolutions/100']
+            self.assertEqual([name.decode() for name in group['chroms/name'][:]],
+                             ['scaffold_2', 'scaffold_10'])
+            self.assertEqual(int(group['pixels/count'][:].sum()), 1)
+
+
+    def test_05_sort_does_not_depend_on_assembly(self):
+        """The same names produce the same order across assembly labels."""
+        names = ['chrUn_KI27010', 'chr20', 'chr19', 'chr2', 'chrX', 'chrY',
+                 'chrM', 'chr10', 'chr1', 'chrUn_KI2702']
+        for assembly, bare in [('hg38', False), ('GRCh38.p14', True),
+                               ('mm10', False), ('GRCm39', True), ('unknown', False)]:
+            def name(value):
+                return ('MT' if value == 'chrM' else value.removeprefix('chr')) if bare else value
+            ref = self.work / f'{assembly}.sizes'
+            ref.write_text(''.join(f'{name(c)}\t1000\n' for c in names))
+            pairs = self.work / f'{assembly}.pairs'
+            pairs.write_text(
+                '## pairs format v1.0.0\n'
+                '#columns: readID chrom1 pos1 chrom2 pos2 strand1 strand2 pair_type\n'
+                f'a\t{name("chr20")}\t101\t{name("chr1")}\t1\t+\t-\tUU\n'
+                f'b\t{name("chrUn_KI27010")}\t1\t{name("chr19")}\t101\t+\t-\tUU\n'
+            )
+            matrix = self.work / f'{assembly}.mcool'
+            run(BINARY, 'matrix', pairs, '--chromsizes', ref, '--assembly', assembly,
+                '--resolutions', '100,200', '--threads', '2', '-o', matrix)
+            primary = ['chr1', 'chr2', 'chr10', 'chr19', 'chr20', 'chrX', 'chrY', 'chrM']
+            expected = [name(c) for c in primary + ['chrUn_KI2702', 'chrUn_KI27010']]
+            with h5py.File(matrix, 'r') as f:
+                for res in ('100', '200'):
+                    group = f[f'resolutions/{res}']
+                    chroms = [c.decode() for c in group['chroms/name'][:]]
+                    self.assertEqual(chroms, expected)
+                    self.assertEqual(int(group['pixels/count'][:].sum()), 2)
+                    bins_chrom, starts = group['bins/chrom'][:], group['bins/start'][:]
+                    actual = {}
+                    for a, b, count in zip(group['pixels/bin1_id'][:], group['pixels/bin2_id'][:],
+                                           group['pixels/count'][:]):
+                        endpoints = tuple(sorted(((chroms[bins_chrom[a]], int(starts[a])),
+                                                  (chroms[bins_chrom[b]], int(starts[b])))))
+                        actual[endpoints] = int(count)
+                    step = int(res)
+                    expected_pixels = {
+                        tuple(sorted(((name('chr1'), 0), (name('chr20'), 100 // step * step)))): 1,
+                        tuple(sorted(((name('chrUn_KI27010'), 0), (name('chr19'), 100 // step * step)))): 1,
+                    }
+                    self.assertEqual(actual, expected_pixels)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

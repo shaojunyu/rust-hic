@@ -5,13 +5,7 @@ use hdf5::{
     File, Group,
 };
 use rayon::prelude::*;
-use std::{
-    env,
-    fs::{self, File as StdFile},
-    io::{BufRead, BufReader},
-    path::Path,
-    time::Instant,
-};
+use std::{env, fs, path::Path, time::Instant};
 #[derive(Clone)]
 struct Chrom {
     name: String,
@@ -402,25 +396,15 @@ fn run() -> Result<()> {
     rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .build_global()?;
-    let mut chroms = Vec::new();
-    for l in BufReader::new(StdFile::open(&a[2])?).lines() {
-        let l = l?;
-        let f: Vec<_> = l.split_whitespace().collect();
-        if f.len() != 2 {
-            bail!("invalid chromsizes")
-        };
-        let len: u64 = f[1].parse()?;
-        if len == 0 || len > i32::MAX as u64 {
-            bail!("invalid chromosome length")
-        };
-        chroms.push(Chrom {
-            name: f[0].into(),
-            len,
+    let sort = env::var(super::SORT_CHROMOSOMES_ENV).as_deref() != Ok("0");
+    let selected = super::read_chromosomes(Path::new(&a[2]), sort)?;
+    let chroms: Vec<Chrom> = selected
+        .into_iter()
+        .map(|c| Chrom {
+            name: c.name,
+            len: c.len,
         })
-    }
-    if chroms.is_empty() {
-        bail!("empty chromsizes")
-    }
+        .collect();
     let input = File::open(&a[1])?;
     let base_res: i64 = input.attr("bin-size")?.read_scalar()?;
     if base_res <= 0 {

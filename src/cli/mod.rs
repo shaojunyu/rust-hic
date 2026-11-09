@@ -233,6 +233,9 @@ pub(crate) struct MatrixArgs {
     /// Comma-separated bin sizes, smallest first.
     #[arg(long)]
     pub resolutions: Option<String>,
+    /// Preserve chromosome sizes file order in the matrix.
+    #[arg(long)]
+    pub no_sort_chromosomes: bool,
     /// Matrix worker threads.
     #[arg(long, default_value_t = 4)]
     pub threads: usize,

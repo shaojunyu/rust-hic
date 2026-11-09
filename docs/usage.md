@@ -135,6 +135,14 @@ A successful `run` creates these files in `output_dir`:
 | `report.json` | Machine-readable report with counts, timings and matrix balance status. |
 
 The mcool stores its chromosome, pixel, bin and index datasets with gzip compression.
+By default, chromosomes are sorted in natural numeric order. Standard
+chromosomes come first, followed by other contigs (for example, `chrUn_2`
+before `chrUn_10`). All contigs in the chromosome sizes file are included.
+Sorting uses chromosome names only: numbered chromosomes are followed by X,
+Y, Z, W and M/MT. Names with or without `chr` are supported, and chromosome
+names are not changed; additional contigs follow in natural order. Assembly
+names do not affect the sorting.
+Set `sort_chromosomes: false` to use the original chromosome sizes file order.
 
 By default, neither BAM nor uncompressed pairs are retained. For example,
 `rust-hic run config.yaml --keep-bam --keep-pairs` retains both. BAM contains
@@ -258,8 +266,10 @@ After `clean`, create a multi-resolution `.mcool` from the resulting pairs file:
   --chromsizes hg38.chrom.sizes --assembly hg38 --threads 4 -o sample.mcool
 ```
 
-`matrix` bins and balances exactly the input records. It does not sort, filter,
-or remove duplicate pairs; use `clean` first. Set `--resolutions` to a
+`matrix` bins and balances the input records. It does not sort or deduplicate
+pairs; use `clean` first. Use `--no-sort-chromosomes` to preserve the input
+chromosome order.
+Set `--resolutions` to a
 comma-separated list of bin sizes in bases. Each must be a positive multiple of
 the first, which must be the smallest. The complete example configuration lists
 the default resolutions; run `rust-hic matrix --help` for options.

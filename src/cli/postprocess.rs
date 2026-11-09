@@ -18,6 +18,7 @@ pub fn clean(args: CleanArgs) -> Result<()> {
         args.max_mismatch,
         None,
         true,
+        true,
     )
 }
 pub fn matrix(args: MatrixArgs) -> Result<()> {
@@ -30,6 +31,7 @@ pub fn matrix(args: MatrixArgs) -> Result<()> {
         None,
         3,
         args.resolutions,
+        !args.no_sort_chromosomes,
         false,
     )
 }
@@ -43,6 +45,7 @@ fn run(
     fragments: Option<PathBuf>,
     max_mismatch: i64,
     resolution_arg: Option<String>,
+    sort_chromosomes: bool,
     pairs_only: bool,
 ) -> Result<()> {
     let command = if pairs_only { "clean" } else { "matrix" };
@@ -117,6 +120,7 @@ fn run(
             dedup_max_mismatch: max_mismatch,
             resources,
             resolutions,
+            sort_chromosomes,
             balance_max_iterations: crate::workflow::config::iterations(),
         };
         if c.fragments.is_none() {
@@ -130,6 +134,7 @@ fn run(
             &assembly,
             &resolutions,
             threads,
+            sort_chromosomes,
             workspace.path(),
         )
     };
@@ -171,6 +176,7 @@ fn build_matrix(
     assembly: &str,
     resolutions: &[u64],
     threads: usize,
+    sort_chromosomes: bool,
     work: &Path,
 ) -> Result<()> {
     let input = fs::canonicalize(input).context("open cleaned pairs")?;
@@ -189,6 +195,7 @@ fn build_matrix(
         .arg(&base)
         .arg(work)
         .arg(threads.to_string());
+    crate::matrix::chromosome_options(&mut first, sort_chromosomes);
     crate::workflow::process::exec(first, &logs, "pairs-to-cool", None)?;
     crate::workflow::log(&logs, "cool_done", started)?;
     crate::workflow::log(&logs, "mcool_start", started)?;
@@ -209,6 +216,7 @@ fn build_matrix(
             crate::matrix::BALANCE_MAX_ITERS_ENV,
             crate::workflow::config::iterations().to_string(),
         );
+    crate::matrix::chromosome_options(&mut zoom, sort_chromosomes);
     crate::workflow::process::exec(zoom, &logs, "cool-to-mcool", None)?;
     crate::workflow::log(&logs, "mcool_done", started)?;
     Ok(())
