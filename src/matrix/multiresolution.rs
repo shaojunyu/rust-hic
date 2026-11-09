@@ -187,8 +187,19 @@ fn write_group(
         .map(|c| FixedAscii::from_ascii(&c.name))
         .collect::<std::result::Result<_, _>>()?;
     let lens: Vec<i32> = chroms.iter().map(|c| c.len as i32).collect();
-    cg.new_dataset_builder().with_data(&names).create("name")?;
-    cg.new_dataset_builder().with_data(&lens).create("length")?;
+    let chrom_chunk = (65_536.min(chroms.len().max(1)),);
+    cg.new_dataset_builder()
+        .with_data(&names)
+        .chunk(chrom_chunk)
+        .shuffle()
+        .deflate(6)
+        .create("name")?;
+    cg.new_dataset_builder()
+        .with_data(&lens)
+        .chunk(chrom_chunk)
+        .shuffle()
+        .deflate(6)
+        .create("length")?;
     let (mut bc, mut bs, mut be, mut co) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for (i, c) in chroms.iter().enumerate() {
         co.push(bc.len() as i64);
@@ -217,6 +228,9 @@ fn write_group(
         .new_dataset_builder()
         .empty_as(&chromtype)
         .shape(bc.len())
+        .chunk((65_536.min(bc.len().max(1)),))
+        .shuffle()
+        .deflate(6)
         .create("chrom")?;
     let dtype = d.dtype()?;
     let status = hdf5::sync::sync(|| unsafe {
@@ -225,14 +239,44 @@ fn write_group(
     if status < 0 {
         bail!("enum write failed")
     }
-    bg.new_dataset_builder().with_data(&bs).create("start")?;
-    bg.new_dataset_builder().with_data(&be).create("end")?;
+    let bin_chunk = (65_536.min(bc.len().max(1)),);
+    bg.new_dataset_builder()
+        .with_data(&bs)
+        .chunk(bin_chunk)
+        .shuffle()
+        .deflate(6)
+        .create("start")?;
+    bg.new_dataset_builder()
+        .with_data(&be)
+        .chunk(bin_chunk)
+        .shuffle()
+        .deflate(6)
+        .create("end")?;
     ig.new_dataset_builder()
         .with_data(&co)
+        .chunk((65_536.min(co.len().max(1)),))
+        .shuffle()
+        .deflate(6)
         .create("chrom_offset")?;
-    pg.new_dataset_builder().with_data(&p.x).create("bin1_id")?;
-    pg.new_dataset_builder().with_data(&p.y).create("bin2_id")?;
-    pg.new_dataset_builder().with_data(&p.v).create("count")?;
+    let pixel_chunk = (65_536.min(p.x.len().max(1)),);
+    pg.new_dataset_builder()
+        .with_data(&p.x)
+        .chunk(pixel_chunk)
+        .shuffle()
+        .deflate(6)
+        .create("bin1_id")?;
+    pg.new_dataset_builder()
+        .with_data(&p.y)
+        .chunk(pixel_chunk)
+        .shuffle()
+        .deflate(6)
+        .create("bin2_id")?;
+    pg.new_dataset_builder()
+        .with_data(&p.v)
+        .chunk(pixel_chunk)
+        .shuffle()
+        .deflate(6)
+        .create("count")?;
     let mut offsets = vec![0i64; bc.len() + 1];
     let mut cur = 0;
     for (i, &x) in p.x.iter().enumerate() {
@@ -247,6 +291,9 @@ fn write_group(
     }
     ig.new_dataset_builder()
         .with_data(&offsets)
+        .chunk((65_536.min(offsets.len().max(1)),))
+        .shuffle()
+        .deflate(6)
         .create("bin1_offset")?;
     let sum = p.v.iter().map(|x| *x as i64).sum::<i64>();
     for (k, v) in [

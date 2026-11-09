@@ -134,6 +134,8 @@ A successful `run` creates these files in `output_dir`:
 | `report.html` | Offline, formatted run report. |
 | `report.json` | Machine-readable report with counts, timings and matrix balance status. |
 
+The mcool stores its chromosome, pixel, bin and index datasets with gzip compression.
+
 By default, neither BAM nor uncompressed pairs are retained. For example,
 `rust-hic run config.yaml --keep-bam --keep-pairs` retains both. BAM contains
 the records emitted by the aligner, before pairs filtering and deduplication;

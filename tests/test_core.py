@@ -190,6 +190,28 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(len(f['resolutions']), 10)
             for resolution in ('5000', '10000', '5000000'):
                 self.assertEqual(int(f[f'resolutions/{resolution}/pixels/count'][:].sum()), 2)
+                self.assertEqual(f[f'resolutions/{resolution}/bins/weight'].compression, 'gzip')
+                for group, columns in (('chroms', ('name', 'length')),
+                                       ('bins', ('chrom', 'start', 'end')),
+                                       ('indexes', ('chrom_offset', 'bin1_offset')),
+                                       ('pixels', ('bin1_id', 'bin2_id', 'count'))):
+                    for column in columns:
+                        dataset = f[f'resolutions/{resolution}/{group}/{column}']
+                        self.assertEqual(dataset.compression, 'gzip')
+                        self.assertTrue(dataset.shuffle)
+
+        # Empty pixel arrays must remain valid chunked, compressed HDF5 datasets.
+        empty = self.work / 'empty.pairs'
+        empty.write_text(''.join(line for line in clean.read_text().splitlines(keepends=True)
+                                 if line.startswith('#')))
+        empty_mcool = self.work / 'empty.mcool'
+        run(BINARY, 'matrix', empty, '--chromsizes', DATA / 'chrom.sizes',
+            '--assembly', 'test', '--threads', '2', '--resolutions', '5000', '-o', empty_mcool)
+        with h5py.File(empty_mcool, 'r') as f:
+            for column in ('bin1_id', 'bin2_id', 'count'):
+                dataset = f[f'resolutions/5000/pixels/{column}']
+                self.assertEqual(dataset.shape, (0,))
+                self.assertEqual(dataset.compression, 'gzip')
 
 
 if __name__ == '__main__':
