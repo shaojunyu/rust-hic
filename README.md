@@ -29,7 +29,9 @@ for details. To generate an annotated configuration with all YAML settings, run
 `./rust-hic example-config > config.yaml`.
 
 The `run` command defaults to local execution; `--mode slurm` submits the
-workflow to a Slurm cluster. By default, the result includes `contacts.mcool`
+workflow to a Slurm cluster. Results are grouped under `matrix/`, `pairs/`,
+`alignments/`, `qc/` and `logs/`, and each data or QC file is named with a sample
+prefix derived from the R1 filename. By default, the result includes the matrix
 and reports; BAM and pairs files are not retained.
 
 The release executable targets x86-64 Linux; its built-in BWA-MEM3 requires

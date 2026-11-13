@@ -12,6 +12,8 @@ import unittest
 import h5py
 import numpy as np
 
+import layout_helpers as layout
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / 'tests' / 'data'
 BIN = Path(os.environ.get('RUST_HIC_BIN', ROOT / 'target/release/rust-hic'))
@@ -97,10 +99,10 @@ class WorkflowOverlap(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('aligner: bwa-mem3',
                           (tmp / 'overlap' / 'config.resolved.yaml').read_text())
-            self.assertEqual((tmp / 'sequential' / 'filtered-nodups.pairs').read_bytes(),
-                             (tmp / 'overlap' / 'filtered-nodups.pairs').read_bytes())
-            with h5py.File(tmp / 'overlap' / 'contacts.mcool', 'r') as actual, \
-                 h5py.File(tmp / 'sequential' / 'contacts.mcool', 'r') as expected:
+            self.assertEqual(layout.pairs(tmp / 'sequential').read_bytes(),
+                             layout.pairs(tmp / 'overlap').read_bytes())
+            with h5py.File(layout.mcool(tmp / 'overlap'), 'r') as actual, \
+                 h5py.File(layout.mcool(tmp / 'sequential'), 'r') as expected:
                 for column in ('bin1_id', 'bin2_id', 'count'):
                     np.testing.assert_array_equal(actual[f'resolutions/1000/pixels/{column}'][:],
                                                   expected[f'resolutions/1000/pixels/{column}'][:])
@@ -164,24 +166,24 @@ class WorkflowOverlap(unittest.TestCase):
                         path.write_text(json.dumps(config))
                         result = run(BIN, 'run', path)
                         self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual((overlap_dir / 'filtered-nodups.pairs').read_bytes(),
-                                     (sequential_dir / 'filtered-nodups.pairs').read_bytes())
-                    report = json.loads((overlap_dir / 'report.json').read_text())
+                    self.assertEqual(layout.pairs(overlap_dir).read_bytes(),
+                                     layout.pairs(sequential_dir).read_bytes())
+                    report = json.loads(layout.qc(overlap_dir, 'report.json').read_text())
                     self.assertEqual(report['input']['aligner'], 'chromap')
                     self.assertEqual(report['counts']['input_read_pairs'], 1024)
                     self.assertEqual(report['counts']['pairs_before_restriction'], 7)
                     self.assertEqual(report['restriction']['mode'], 'bed' if use_fragments else 'disabled')
                     self.assertTrue(all(chunk['selected_pairs'] is None for chunk in report['chunks']))
                     if use_fragments:
-                        self.assertEqual(json.loads((overlap_dir / 'filter-stats.json').read_text()),
-                                         json.loads((sequential_dir / 'filter-stats.json').read_text()))
-                        stats = json.loads((overlap_dir / 'filter-stats.json').read_text())
+                        self.assertEqual(json.loads(layout.qc(overlap_dir, 'filter-stats.json').read_text()),
+                                         json.loads(layout.qc(sequential_dir, 'filter-stats.json').read_text()))
+                        stats = json.loads(layout.qc(overlap_dir, 'filter-stats.json').read_text())
                         self.assertEqual((stats['input_records'], stats['same_fragment']), (7, 3))
-                        rows = [line for line in (overlap_dir / 'filtered-nodups.pairs').read_text().splitlines()
+                        rows = [line for line in layout.pairs(overlap_dir).read_text().splitlines()
                                 if not line.startswith('#')]
                         self.assertEqual(len(rows), 3)  # The duplicate spans chunks 1 and 2.
-                    with h5py.File(overlap_dir / 'contacts.mcool', 'r') as actual, \
-                         h5py.File(sequential_dir / 'contacts.mcool', 'r') as expected:
+                    with h5py.File(layout.mcool(overlap_dir), 'r') as actual, \
+                         h5py.File(layout.mcool(sequential_dir), 'r') as expected:
                         for column in ('bin1_id', 'bin2_id', 'count'):
                             self.assertEqual(actual[f'resolutions/1000/pixels/{column}'][:].tolist(),
                                              expected[f'resolutions/1000/pixels/{column}'][:].tolist())
@@ -191,7 +193,7 @@ class WorkflowOverlap(unittest.TestCase):
                         np.testing.assert_allclose(actual['resolutions/1000/bins/weight'][:],
                                                    expected['resolutions/1000/bins/weight'][:],
                                                    equal_nan=True)
-                    events = [json.loads(line) for line in (overlap_dir / 'events.jsonl').read_text().splitlines()]
+                    events = [json.loads(line) for line in layout.event_log(overlap_dir).read_text().splitlines()]
                     alignment_end = next(e['elapsed_seconds'] for e in events if e['event'] == 'alignment_done')
                     early = [e for e in events if e['event'] == 'sort_chunk_start'
                              and e['elapsed_seconds'] < alignment_end]
@@ -216,7 +218,7 @@ class WorkflowOverlap(unittest.TestCase):
             self.assertTrue((tmp / 'failed' / 'failure.json').is_file())
             failed_work = Path((tmp / 'failed' / 'work-dir.txt').read_text().strip())
             self.assertTrue(failed_work.is_dir())
-            self.assertFalse((tmp / 'failed' / 'contacts.mcool').exists())
+            self.assertFalse(layout.has_mcool(tmp / 'failed'))
 
             bad_bed = tmp / 'incomplete.bed'
             bad_bed.write_text('chr1\t0\t25000\n')
@@ -228,7 +230,7 @@ class WorkflowOverlap(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('filter chunk ', result.stderr)
             self.assertTrue((tmp / 'failed-filter' / 'failure.json').is_file())
-            self.assertFalse((tmp / 'failed-filter' / 'contacts.mcool').exists())
+            self.assertFalse(layout.has_mcool(tmp / 'failed-filter'))
 
 
 if __name__ == '__main__':

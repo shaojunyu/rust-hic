@@ -342,19 +342,23 @@ pub(super) fn render(r: &Report) -> String {
             escape(&path.display().to_string())
         );
     }
-    out.push_str(
-        "</dl><div class=\"output-line\"><strong>Output files</strong><span>contacts.mcool</span>",
-    );
-    if r.outputs.pairs.is_some() {
-        out.push_str("<span>filtered-nodups.pairs</span>");
+    out.push_str("</dl><div class=\"output-line\"><strong>Output files</strong>");
+    let _ = write!(out, "<span>{}</span>", escape(&r.outputs.mcool));
+    if let Some(pairs) = &r.outputs.pairs {
+        let _ = write!(out, "<span>{}</span>", escape(pairs));
     }
-    if r.outputs.bam.is_some() {
-        out.push_str("<span>alignments.bam</span>");
+    if let Some(bam) = &r.outputs.bam {
+        let _ = write!(out, "<span>{}</span>", escape(bam));
     }
-    if r.outputs.compressed_pairs.is_some() {
-        out.push_str("<span>filtered-nodups.pairs.gz + .px2</span>");
+    if let Some(compressed) = &r.outputs.compressed_pairs {
+        let _ = write!(out, "<span>{}</span>", escape(compressed));
     }
-    out.push_str("<span>report.json</span></div>");
+    if let Some(pairix) = &r.outputs.pairix_index {
+        let _ = write!(out, "<span>{}</span>", escape(pairix));
+    }
+    let _ = write!(out, "<span>{}</span>", escape(&r.outputs.report_html));
+    let _ = write!(out, "<span>{}</span>", escape(&r.outputs.report_json));
+    out.push_str("</div>");
     if !r.chunks.is_empty() {
         let _ = write!(out, "<details class=\"chunks\"><summary>View {} alignment chunks</summary><div class=\"table-wrap\"><table><thead><tr><th>Chunk</th><th class=\"numeric\">Input read pairs</th><th class=\"numeric\">Selected pairs</th><th class=\"numeric\">Elapsed</th></tr></thead><tbody>", r.chunks.len());
         for c in &r.chunks {

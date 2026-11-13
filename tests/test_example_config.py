@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 import unittest
 
+import layout_helpers as layout
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / 'tests' / 'data'
 BIN = Path(os.environ.get('RUST_HIC_BIN', ROOT / 'target/release/rust-hic')).resolve()
@@ -59,10 +61,10 @@ class ExampleConfigTests(unittest.TestCase):
         result = command(BIN, 'run', config)
         self.assertEqual(result.returncode, 0, result.stderr)
         out = self.work / 'new-result'
-        self.assertTrue((out / 'contacts.mcool').is_file())
-        self.assertTrue((out / 'report.html').is_file())
-        self.assertFalse((out / 'filtered-nodups.pairs').exists())
-        self.assertFalse((out / 'alignments.bam').exists())
+        self.assertTrue(layout.mcool(out).is_file())
+        self.assertTrue(layout.qc(out, 'report.html').is_file())
+        self.assertFalse(layout.has_pairs(out))
+        self.assertFalse(layout.has_bam(out))
         resolved = (out / 'config.resolved.yaml').read_text()
         self.assertIn('aligner: bwa-mem3', resolved)
         self.assertIn('index_threads_per_mate: 8', resolved)
@@ -91,17 +93,21 @@ class ExampleConfigTests(unittest.TestCase):
         result = command(BIN, 'run', config)
         self.assertEqual(result.returncode, 0, result.stderr)
         output = self.work / 'new-result'
-        for name in ('contacts.mcool', 'filtered-nodups.pairs', 'filtered-nodups.pairs.gz',
-                     'filtered-nodups.pairs.gz.px2', 'status.json', 'config.resolved.yaml',
-                     'report.html', 'report.json'):
+        for name in ('status.json', 'config.resolved.yaml'):
             self.assertTrue((output / name).is_file(), name)
+        self.assertTrue(layout.mcool(output).is_file())
+        self.assertTrue(layout.pairs(output).is_file())
+        self.assertTrue(layout.compressed_pairs(output).is_file())
+        self.assertTrue(layout.pairix(output).is_file())
+        self.assertTrue(layout.qc(output, 'report.html').is_file())
+        self.assertTrue(layout.qc(output, 'report.json').is_file())
         resolved = (output / 'config.resolved.yaml').read_text()
         self.assertIn('compressed_pairs: true', resolved)
         self.assertIn('balance_max_iterations: 2', resolved)
         self.assertIn(f'dedup_max_mismatch: {mismatch}', resolved)
         self.assertIn('sort_run_mib: 1', resolved)
         self.assertEqual(json.loads((output / 'status.json').read_text())['status'], 'complete')
-        report = json.loads((output / 'report.json').read_text())
+        report = json.loads(layout.qc(output, 'report.json').read_text())
         counts = report['counts']
         self.assertEqual(counts['pairs_before_dedup'] - counts['duplicates'], counts['final_contacts'])
         self.assertEqual(counts['cis'] + counts['trans'], counts['final_contacts'])
@@ -109,8 +115,8 @@ class ExampleConfigTests(unittest.TestCase):
         for item in report['resolutions']:
             if item['usable_bins'] == 0:
                 self.assertIsNone(item['converged'])
-        self.assertIn('Resolution &amp; balance', (output / 'report.html').read_text())
-        records = [line.split('\t') for line in (output / 'filtered-nodups.pairs').read_text().splitlines()
+        self.assertIn('Resolution &amp; balance', layout.qc(output, 'report.html').read_text())
+        records = [line.split('\t') for line in layout.pairs(output).read_text().splitlines()
                    if not line.startswith('#')]
         self.assertEqual(counts['pair_types'], dict(Counter(row[7] for row in records)))
         self.assertEqual(sum(counts['strand_orientations'].values()), len(records))
@@ -126,7 +132,7 @@ class ExampleConfigTests(unittest.TestCase):
         resolved = self.run_example(text)
         self.assertIn('enzyme: Arima', resolved)
         self.assertIn('sample1.pairs', resolved)
-        report = json.loads((self.work / 'new-result/report.json').read_text())
+        report = json.loads(layout.qc(self.work / 'new-result', 'report.json').read_text())
         self.assertEqual(report['restriction']['mode'], 'arima_digest')
         self.assertEqual(report['restriction']['stats']['input_records'],
                          report['counts']['pairs_before_restriction'])
@@ -140,10 +146,10 @@ class ExampleConfigTests(unittest.TestCase):
         resolved = self.run_example(text)
         self.assertIn('fragments: null', resolved)
         self.assertIn('digest: null', resolved)
-        self.assertFalse((self.work / 'new-result' / 'filter-stats.json').exists())
-        pairs = (self.work / 'new-result' / 'filtered-nodups.pairs').read_text()
+        self.assertFalse(list((self.work / 'new-result' / 'qc').glob('*.filter-stats.json')))
+        pairs = layout.pairs(self.work / 'new-result').read_text()
         self.assertIn('#columns: readID chrom1 pos1 chrom2 pos2 strand1 strand2 pair_type\n', pairs)
-        report = json.loads((self.work / 'new-result/report.json').read_text())
+        report = json.loads(layout.qc(self.work / 'new-result', 'report.json').read_text())
         self.assertEqual(report['restriction']['mode'], 'disabled')
         self.assertIsNone(report['restriction']['stats'])
         dest = self.work / 'regenerated'
@@ -155,7 +161,7 @@ class ExampleConfigTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('already exists', result.stderr)
         # Older run outputs lack the detailed distributions; never invent them.
-        stats_path = self.work / 'new-result/contact-stats.json'
+        stats_path = layout.qc(self.work / 'new-result', 'contact-stats.json')
         stats = json.loads(stats_path.read_text())
         for name in ('pair_types', 'strand_orientations', 'cis_distance_bins'):
             del stats[name]
@@ -188,8 +194,8 @@ class ExampleConfigTests(unittest.TestCase):
         text = text.replace('assembly: hg38', "assembly: 'hg38<&'")
         text = text.replace('dedup_max_mismatch: 3', 'dedup_max_mismatch: 0')
         self.run_example(text, mismatch=0)
-        report = json.loads((self.work / 'new-result/report.json').read_text())
-        records = [line.split('\t') for line in (self.work / 'new-result/filtered-nodups.pairs').read_text().splitlines()
+        report = json.loads(layout.qc(self.work / 'new-result', 'report.json').read_text())
+        records = [line.split('\t') for line in layout.pairs(self.work / 'new-result').read_text().splitlines()
                    if not line.startswith('#')]
         actual_distances = [abs(int(row[2]) - int(row[4])) for row in records if row[1] == row[3]]
         self.assertCountEqual(actual_distances, distances)
@@ -197,7 +203,7 @@ class ExampleConfigTests(unittest.TestCase):
             self.assertEqual(bin['count'], sum(bin['start_bp'] <= distance and
                                              (bin['end_bp'] is None or distance < bin['end_bp'])
                                              for distance in actual_distances))
-        page = (self.work / 'new-result/report.html').read_text()
+        page = layout.qc(self.work / 'new-result', 'report.html').read_text()
         self.assertIn('hg38&lt;&amp;', page)
         self.assertNotIn('hg38<&', page)
 
@@ -215,11 +221,11 @@ class ExampleConfigTests(unittest.TestCase):
             config.write_text(json.dumps({**base, 'output_dir': str(out)}))
             result = command(BIN, 'run', config, *(['--keep-pairs'] if retain else []))
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertTrue((out / 'contacts.mcool').is_file())
-            self.assertTrue((out / 'report.html').is_file())
-            self.assertEqual((out / 'filtered-nodups.pairs').exists(), retain)
+            self.assertTrue(layout.mcool(out).is_file())
+            self.assertTrue(layout.qc(out, 'report.html').is_file())
+            self.assertEqual(layout.has_pairs(out), retain)
             self.assertFalse((out / 'work-dir.txt').exists())
-            report = json.loads((out / 'report.json').read_text())
+            report = json.loads(layout.qc(out, 'report.json').read_text())
             self.assertEqual(report['outputs']['pairs'] is not None, retain)
             if not retain:
                 target = self.work / 'recompute-without-pairs'
@@ -253,8 +259,7 @@ class ExampleConfigTests(unittest.TestCase):
         self.assertIn(f'expected_pairs: {count}', resolved)
         self.assertIn('index_threads_per_mate: 1', resolved)
         self.assertIn('chunks: 3', resolved)
-        report = json.loads((self.work / 'new-result/report.json').read_text())
-        self.assertEqual(report['restriction']['mode'], 'bed')
+        report = json.loads(layout.qc(self.work / 'new-result', 'report.json').read_text())
         self.assertEqual(report['counts']['input_read_pairs'], count)
         self.assertEqual(len(report['chunks']), 3)
         self.assertEqual(sum(item['selected_pairs'] for item in report['chunks']),

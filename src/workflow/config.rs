@@ -51,6 +51,13 @@ impl Default for Resources {
         }
     }
 }
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OutputConfig {
+    #[serde(default)]
+    pub(crate) prefix: Option<String>,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Config {
@@ -66,6 +73,8 @@ pub(crate) struct Config {
     #[serde(default)]
     pub(crate) input_sorted: bool,
     pub(crate) output_dir: PathBuf,
+    #[serde(default)]
+    pub(crate) output: OutputConfig,
     pub(crate) scratch_dir: PathBuf,
     #[serde(default)]
     pub(crate) merge_scratch_dir: Option<PathBuf>,

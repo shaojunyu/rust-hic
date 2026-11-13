@@ -5,7 +5,10 @@ use super::state::{
 };
 use crate::{
     mapping::align,
-    workflow::{chunks, config::Config, digest, finish_stages, process::affinity_mask, RunClock},
+    workflow::{
+        chunks, config::Config, digest, finish_stages, layout::Layout, process::affinity_mask,
+        RunClock,
+    },
 };
 use anyhow::{bail, Context, Result};
 use std::{
@@ -65,13 +68,14 @@ fn index_done(plan: &Plan, c: &Config) -> Result<IndexDone> {
 
 pub(crate) fn task(phase: &str, work: &Path, chunk: Option<usize>) -> Result<()> {
     let (plan, mut c) = load_plan(work)?;
+    let layout = Layout::from_config(&plan.output, &c)?;
     if matches!((phase, chunk), ("index", None)) {
         clear_failure(&plan.output, "index")?;
     }
     let result = match (phase, chunk) {
-        ("index", None) => run_index(&plan, &mut c),
+        ("index", None) => run_index(&plan, &layout, &mut c),
         ("map", Some(i)) => run_chunk(&plan, &c, i),
-        ("finish", None) => run_finish(&plan, &mut c),
+        ("finish", None) => run_finish(&plan, &layout, &mut c),
         _ => bail!("invalid internal Slurm task"),
     };
     if let Err(error) = &result {
@@ -82,7 +86,7 @@ pub(crate) fn task(phase: &str, work: &Path, chunk: Option<usize>) -> Result<()>
     result
 }
 
-fn run_index(plan: &Plan, c: &mut Config) -> Result<()> {
+fn run_index(plan: &Plan, layout: &Layout, c: &mut Config) -> Result<()> {
     if plan.work.join("index-complete.json").is_file() {
         index_done(plan, c)?;
         return Ok(());
@@ -94,7 +98,7 @@ fn run_index(plan: &Plan, c: &mut Config) -> Result<()> {
             fastq,
             &env::current_exe()?,
             &plan.work.join("unused-index"),
-            &plan.output.join("fastq-index.log"),
+            &layout.log("fastq-index"),
             false,
             true,
         )?
@@ -114,7 +118,7 @@ fn run_index(plan: &Plan, c: &mut Config) -> Result<()> {
                 fastq,
                 &env::current_exe()?,
                 &candidate,
-                &plan.output.join("fastq-index.log"),
+                &layout.log("fastq-index"),
                 false,
                 false,
             );
@@ -268,7 +272,12 @@ fn run_chunk(plan: &Plan, c: &Config, chunk: usize) -> Result<()> {
     Ok(())
 }
 
-fn write_initial_events(plan: &Plan, index: &IndexDone, chunks: &[ChunkDone]) -> Result<()> {
+fn write_initial_events(
+    plan: &Plan,
+    layout: &Layout,
+    index: &IndexDone,
+    chunks: &[ChunkDone],
+) -> Result<()> {
     let first = chunks
         .iter()
         .map(|c| c.start_ms)
@@ -285,7 +294,7 @@ fn write_initial_events(plan: &Plan, index: &IndexDone, chunks: &[ChunkDone]) ->
     let index_end = index.end_ms.max(index_start);
     let map_start = first.max(index_end);
     let map_end = last.max(map_start);
-    let path = plan.output.join("events.jsonl");
+    let path = layout.events();
     let mut f = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -309,7 +318,7 @@ fn write_initial_events(plan: &Plan, index: &IndexDone, chunks: &[ChunkDone]) ->
     Ok(())
 }
 
-fn copy_chunk_logs(plan: &Plan, chunk: usize) -> Result<()> {
+fn copy_chunk_logs(plan: &Plan, layout: &Layout, chunk: usize) -> Result<()> {
     let dir = chunk_dir(plan, chunk);
     let prefix = format!("align-{chunk:04}");
     for entry in fs::read_dir(&dir)? {
@@ -324,14 +333,14 @@ fn copy_chunk_logs(plan: &Plan, chunk: usize) -> Result<()> {
         if name_text.starts_with(&prefix)
             && (name_text.ends_with(".log") || name_text.ends_with(".json"))
         {
-            fs::copy(entry.path(), plan.output.join(name))?;
+            fs::copy(entry.path(), layout.logs().join(name))?;
         }
     }
     Ok(())
 }
 
-fn run_finish(plan: &Plan, c: &mut Config) -> Result<()> {
-    if plan.output.join("status.json").exists() {
+fn run_finish(plan: &Plan, layout: &Layout, c: &mut Config) -> Result<()> {
+    if layout.status().exists() {
         bail!("workflow output already has a completion status")
     }
     let index = index_done(plan, c)?;
@@ -363,17 +372,17 @@ fn run_finish(plan: &Plan, c: &mut Config) -> Result<()> {
         .context("final processing was already started; inspect the retained workspace")?;
     let postprocess_cpus = affinity_mask(c.resources.postprocess_cpus.as_deref())?;
     for chunk in 0..plan.chunks {
-        copy_chunk_logs(plan, chunk)?;
+        copy_chunk_logs(plan, layout, chunk)?;
     }
-    write_initial_events(plan, &index, &done)?;
+    write_initial_events(plan, layout, &index, &done)?;
     let offset = now_ms()?.saturating_sub(plan.submitted_ms);
     let started = RunClock::with_offset(Duration::from_millis(offset));
     if let Some(digest_config) = &c.digest {
-        crate::workflow::log(&plan.output, "digest_start", started)?;
+        crate::workflow::log(&layout.logs(), "digest_start", started)?;
         let bed = plan.work.join("restriction-fragments.bed");
         digest::digest(digest_config, &c.chromsizes, &bed)?;
         c.fragments = Some(bed);
-        crate::workflow::log(&plan.output, "digest_done", started)?;
+        crate::workflow::log(&layout.logs(), "digest_done", started)?;
     }
     let mapped: Vec<_> = (0..plan.chunks)
         .map(|i| chunk_dir(plan, i).join(format!("align-{i:04}/alignments.pairs")))
@@ -382,7 +391,7 @@ fn run_finish(plan: &Plan, c: &mut Config) -> Result<()> {
         c,
         &mapped,
         &plan.work,
-        &plan.output,
+        layout,
         started,
         postprocess_cpus.as_ref(),
     )?;
@@ -390,13 +399,13 @@ fn run_finish(plan: &Plan, c: &mut Config) -> Result<()> {
         let parts: Vec<_> = (0..plan.chunks)
             .map(|i| chunk_dir(plan, i).join(format!("align-{i:04}/alignments.bam")))
             .collect();
-        crate::mapping::bam::merge(&parts, &plan.output.join("alignments.bam"))?;
-        crate::workflow::log(&plan.output, "bam_merge_done", started)?;
+        crate::mapping::bam::merge(&parts, &layout.bam())?;
+        crate::workflow::log(&layout.logs(), "bam_merge_done", started)?;
     }
     finish_stages(
         c,
         &plan.work,
-        &plan.output,
+        layout,
         &sorted,
         c.fragments.is_some(),
         false,
@@ -404,23 +413,29 @@ fn run_finish(plan: &Plan, c: &mut Config) -> Result<()> {
         &postprocess_cpus,
     )?;
     // A previous scheduler attempt may have failed before being requeued.
-    match fs::remove_file(plan.output.join("failure.json")) {
+    match fs::remove_file(layout.failure()) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e).context("remove obsolete failure record"),
     }
-    crate::workflow::log(&plan.output, "pipeline_done", started)?;
+    crate::workflow::log(&layout.logs(), "pipeline_done", started)?;
     write_json(
-        &plan.output.join("status.json"),
+        &layout.status(),
         &serde_json::json!({
             "status":"complete", "elapsed_seconds":started.elapsed().as_secs_f64()
         }),
     )?;
+    if let Err(e) = layout.write_manifest() {
+        eprintln!(
+            "warning: unable to write {}: {e:#}",
+            layout.manifest().display()
+        );
+    }
     // Publish the completed result before deleting scratch. If a node is lost
     // during cleanup, the matrix and its completion status remain usable.
     match fs::remove_dir_all(&plan.work) {
         Ok(()) => {
-            if let Err(e) = fs::remove_file(plan.output.join("work-dir.txt")) {
+            if let Err(e) = fs::remove_file(layout.work_dir_file()) {
                 eprintln!("warning: unable to remove work-dir.txt: {e}");
             }
         }
@@ -429,6 +444,6 @@ fn run_finish(plan: &Plan, c: &mut Config) -> Result<()> {
             plan.work.display()
         ),
     }
-    eprintln!("report: {}", plan.output.join("report.html").display());
+    eprintln!("report: {}", layout.report_html().display());
     Ok(())
 }

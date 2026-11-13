@@ -12,6 +12,8 @@ import unittest
 import h5py
 import numpy as np
 
+import layout_helpers as layout
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / 'tests' / 'data'
 BIN = Path(os.environ.get('RUST_HIC_BIN', ROOT / 'target/release/rust-hic'))
@@ -63,15 +65,15 @@ class BamRetention(unittest.TestCase):
                         config.write_text(json.dumps({**common, 'fastq': fastq, 'output_dir': str(out),
                                                       'keep_bam': yaml_option}))
                         command(BIN, 'run', config, *(['--keep-bam'] if keep and not yaml_option else []))
-                        self.assertEqual((out / 'alignments.bam').exists(), keep)
+                        self.assertEqual(layout.has_bam(out), keep)
                         self.assertFalse((out / 'work-dir.txt').exists())
                         results.append(out)
-                    self.assertEqual((results[0] / 'filtered-nodups.pairs').read_bytes(),
-                                     (results[1] / 'filtered-nodups.pairs').read_bytes())
-                    with h5py.File(results[0] / 'contacts.mcool') as a, h5py.File(results[1] / 'contacts.mcool') as b:
+                    self.assertEqual(layout.pairs(results[0]).read_bytes(),
+                                     layout.pairs(results[1]).read_bytes())
+                    with h5py.File(layout.mcool(results[0])) as a, h5py.File(layout.mcool(results[1])) as b:
                         for col in ('bin1_id', 'bin2_id', 'count'):
                             np.testing.assert_array_equal(a[f'resolutions/1000/pixels/{col}'][:], b[f'resolutions/1000/pixels/{col}'][:])
-                    bam = results[1] / 'alignments.bam'
+                    bam = layout.bam(results[1])
                     command(SAMTOOLS, 'quickcheck', bam)
                     header = command(SAMTOOLS, 'view', '-H', bam)
                     self.assertIn('SO:unsorted', header)
@@ -95,7 +97,9 @@ class BamRetention(unittest.TestCase):
                         self.assertEqual(sorted(normalized(r) for r in expected),
                                          sorted(normalized(r.split('\t')) for r in records))
                     self.assertTrue(all(len(row.split('\t')) >= 11 for row in records))
-                    self.assertEqual(json.loads((results[1] / 'report.json').read_text())['outputs']['bam'], 'alignments.bam')
+                    report = json.loads(layout.qc(results[1], 'report.json').read_text())
+                    self.assertEqual(report['outputs']['bam'],
+                                     layout.bam(results[1]).relative_to(results[1]).as_posix())
 
 
 if __name__ == '__main__':

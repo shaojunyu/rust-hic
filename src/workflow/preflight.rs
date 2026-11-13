@@ -1,7 +1,7 @@
 //! Resolve and validate workflow inputs before starting expensive work.
 use super::{
     config::{validate_resolutions, Config},
-    digest, path_from,
+    digest, layout, path_from,
     process::affinity_mask,
 };
 use crate::{
@@ -349,6 +349,7 @@ fn prepare_with(
         digest::resolve(digest, base)?;
         input_file(base, &digest.reference, "digest reference FASTA")?;
     }
+    layout::Layout::resolve_config(&mut c)?;
     c.scratch_dir = writable_dir(base, &c.scratch_dir, "scratch directory")?;
     c.merge_scratch_dir = c
         .merge_scratch_dir

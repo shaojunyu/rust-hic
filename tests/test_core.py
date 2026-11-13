@@ -11,6 +11,8 @@ import unittest
 
 import h5py
 
+import layout_helpers as layout
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / 'tests' / 'data'
 BINARY = Path(os.environ.get('RUST_HIC_BIN', ROOT / 'target/release/rust-hic'))
@@ -182,7 +184,7 @@ class CoreTests(unittest.TestCase):
             'resolutions': [5000], 'balance_max_iterations': 10,
         }))
         run(BINARY, 'run', config)
-        self.assertEqual(pair_rows(result_dir / 'filtered-nodups.pairs'), pair_rows(preserved))
+        self.assertEqual(pair_rows(layout.pairs(result_dir)), pair_rows(preserved))
         mcool = self.work / 'contacts.mcool'
         run(BINARY, 'matrix', clean, '--chromsizes', DATA / 'chrom.sizes',
             '--assembly', 'test', '--threads', '2', '-o', mcool)
@@ -247,8 +249,8 @@ class CoreTests(unittest.TestCase):
                 config_data['sort_chromosomes'] = False
             config.write_text(json.dumps(config_data))
             run(BINARY, 'run', config)
-            self.assertEqual(len(pair_rows(output / 'filtered-nodups.pairs')), 4)
-            for path in (matrix, output / 'contacts.mcool'):
+            self.assertEqual(len(pair_rows(layout.pairs(output))), 4)
+            for path in (matrix, layout.mcool(output)):
                 with h5py.File(path, 'r') as f:
                     for resolution in ('100', '200'):
                         group = f[f'resolutions/{resolution}']

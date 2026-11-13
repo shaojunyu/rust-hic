@@ -93,6 +93,7 @@ fn run(
         })
         .tempdir_in(parent)
         .with_context(|| format!("create {command} workspace next to output"))?;
+    let mut staged_result: Option<PathBuf> = None;
     let result = if pairs_only {
         let jobs = threads.min(inputs.len());
         let resources = Resources {
@@ -103,7 +104,7 @@ fn run(
             sort_threads: (threads / jobs).max(1),
             ..Resources::default()
         };
-        let c = Config {
+        let mut c = Config {
             assembly,
             chromsizes,
             fragments,
@@ -112,6 +113,7 @@ fn run(
             fastq: None,
             input_sorted: false,
             output_dir: workspace.path().join("result"),
+            output: Default::default(),
             scratch_dir: workspace.path().to_path_buf(),
             merge_scratch_dir: None,
             compressed_pairs: false,
@@ -123,10 +125,21 @@ fn run(
             sort_chromosomes,
             balance_max_iterations: crate::workflow::config::iterations(),
         };
+        crate::workflow::layout::Layout::resolve_config(&mut c)?;
+        let prefix = c
+            .output
+            .prefix
+            .clone()
+            .context("output prefix was not resolved")?;
         if c.fragments.is_none() {
             eprintln!("Restriction-fragment filtering skipped (no --fragments BED supplied)");
         }
-        crate::workflow::run_config(c, &env::current_dir()?, false, true)
+        let result = crate::workflow::run_config(c, &env::current_dir()?, false, true);
+        staged_result = Some(
+            crate::workflow::layout::Layout::new(&workspace.path().join("result"), &prefix)?
+                .pairs(),
+        );
+        result
     } else {
         build_matrix(
             &inputs[0],
@@ -147,11 +160,7 @@ fn run(
             )
         });
     }
-    let staged = workspace.path().join(if pairs_only {
-        "result/filtered-nodups.pairs"
-    } else {
-        "result/contacts.mcool"
-    });
+    let staged = staged_result.unwrap_or_else(|| workspace.path().join("result/contacts.mcool"));
     if let Err(error) = fs::hard_link(&staged, &output) {
         let path = workspace.keep();
         return Err(error).with_context(|| {

@@ -1,7 +1,7 @@
 //! Self-contained reports for completed workflow results.
 mod html;
 
-use super::config::Config;
+use super::{config::Config, layout::Layout};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -123,11 +123,20 @@ struct Resolution {
 #[derive(Serialize)]
 struct Outputs {
     result_directory: PathBuf,
-    pairs: Option<&'static str>,
-    bam: Option<&'static str>,
-    mcool: &'static str,
-    compressed_pairs: Option<&'static str>,
-    pairix_index: Option<&'static str>,
+    pairs: Option<String>,
+    bam: Option<String>,
+    mcool: String,
+    compressed_pairs: Option<String>,
+    pairix_index: Option<String>,
+    report_html: String,
+    report_json: String,
+}
+
+fn relative(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
@@ -167,9 +176,9 @@ fn dedup_counts(path: &Path) -> Result<(u64, u64, u64)> {
     result.with_context(|| format!("missing dedup summary in {}", path.display()))
 }
 
-fn chunk_stats(out: &Path) -> Result<Vec<Chunk>> {
+fn chunk_stats(layout: &Layout) -> Result<Vec<Chunk>> {
     let mut chunks = Vec::new();
-    for entry in fs::read_dir(out)? {
+    for entry in fs::read_dir(layout.logs())? {
         let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
@@ -181,7 +190,9 @@ fn chunk_stats(out: &Path) -> Result<Vec<Chunk>> {
         }
         let mut chunk: Chunk = read_json(&entry.path())?;
         if chunk.selected_pairs.is_none() {
-            let sam = out.join(format!("align-{:04}-sam-stats.json", chunk.chunk));
+            let sam = layout
+                .logs()
+                .join(format!("align-{:04}-sam-stats.json", chunk.chunk));
             if sam.exists() {
                 let stats: serde_json::Value = read_json(&sam)?;
                 chunk.selected_pairs = stats.get("selected_pairs").and_then(|v| v.as_u64());
@@ -198,9 +209,9 @@ fn chunk_stats(out: &Path) -> Result<Vec<Chunk>> {
     Ok(chunks)
 }
 
-fn timings(out: &Path, fastq: bool) -> Result<Vec<Timing>> {
-    let distributed = out.join("slurm-jobs.json").is_file();
-    let reader = BufReader::new(File::open(out.join("events.jsonl"))?);
+fn timings(layout: &Layout, fastq: bool) -> Result<Vec<Timing>> {
+    let distributed = layout.slurm_jobs().is_file();
+    let reader = BufReader::new(File::open(layout.events())?);
     let mut events = BTreeMap::new();
     for line in reader.lines() {
         let record: serde_json::Value =
@@ -310,9 +321,14 @@ fn matrix_resolutions(path: &Path, resolutions: &[u64]) -> Result<Vec<Resolution
     Ok(result)
 }
 
-fn collect(out: &Path, c: &Config, elapsed_seconds: f64, contact_path: &Path) -> Result<Report> {
+fn collect(
+    layout: &Layout,
+    c: &Config,
+    elapsed_seconds: f64,
+    contact_path: &Path,
+) -> Result<Report> {
     let contact: ContactStats = read_json(contact_path)?;
-    let (before_dedup, duplicates, after_dedup) = dedup_counts(&out.join("dedup.log"))?;
+    let (before_dedup, duplicates, after_dedup) = dedup_counts(&layout.log("dedup"))?;
     if before_dedup.checked_sub(duplicates) != Some(after_dedup)
         || after_dedup != contact.total_nodups
         || contact.cis.checked_add(contact.trans) != Some(after_dedup)
@@ -350,7 +366,7 @@ fn collect(out: &Path, c: &Config, elapsed_seconds: f64, contact_path: &Path) ->
             bail!("inconsistent cis-distance statistics")
         }
     }
-    let filter_path = out.join("filter-stats.json");
+    let filter_path = layout.filter_stats();
     let filter: Option<FilterStats> = if filter_path.exists() {
         Some(read_json(&filter_path)?)
     } else {
@@ -372,7 +388,7 @@ fn collect(out: &Path, c: &Config, elapsed_seconds: f64, contact_path: &Path) ->
         bail!("restriction-filter statistics do not match the configuration")
     }
     let before_filter = filter.as_ref().map_or(before_dedup, |f| f.input_records);
-    let chunks = chunk_stats(out)?;
+    let chunks = chunk_stats(layout)?;
     let read_pairs = if c.fastq.is_some() {
         if chunks.is_empty() || chunks.iter().enumerate().any(|(i, c)| c.chunk != i) {
             bail!("missing or non-contiguous alignment chunk statistics")
@@ -427,9 +443,9 @@ fn collect(out: &Path, c: &Config, elapsed_seconds: f64, contact_path: &Path) ->
             .or_else(|| c.fragments.clone()),
         stats: filter,
     };
-    let resolutions = matrix_resolutions(&out.join("contacts.mcool"), &c.resolutions)?;
+    let resolutions = matrix_resolutions(&layout.mcool(), &c.resolutions)?;
     let mut notes = vec!["Pairs entering downstream processing are not a standard mapping-rate measure; aligner-specific selection and filtering may already have occurred.".into()];
-    if out.join("slurm-jobs.json").is_file() {
+    if layout.slurm_jobs().is_file() {
         notes.push("The Slurm alignment interval spans the first task start through the last task finish and can include scheduler waiting between tasks. The interval through chunk preparation also includes waiting for the finish job and any restriction digest. Total elapsed time includes queue waits.".into());
     } else {
         notes.push(
@@ -461,31 +477,40 @@ fn collect(out: &Path, c: &Config, elapsed_seconds: f64, contact_path: &Path) ->
             strand_orientations: contact.strand_orientations,
             cis_distance_bins: contact.cis_distance_bins,
         },
-        timings: timings(out, fastq.is_some())?,
+        timings: timings(layout, fastq.is_some())?,
         elapsed_seconds,
         chunks,
         resolutions,
         outputs: Outputs {
-            result_directory: out.to_path_buf(),
-            pairs: out
-                .join("filtered-nodups.pairs")
+            result_directory: layout.root().to_path_buf(),
+            pairs: layout
+                .pairs()
                 .is_file()
-                .then_some("filtered-nodups.pairs"),
-            bam: out
-                .join("alignments.bam")
+                .then(|| relative(layout.root(), &layout.pairs())),
+            bam: layout
+                .bam()
                 .is_file()
-                .then_some("alignments.bam"),
-            mcool: "contacts.mcool",
-            compressed_pairs: c.compressed_pairs.then_some("filtered-nodups.pairs.gz"),
-            pairix_index: c.compressed_pairs.then_some("filtered-nodups.pairs.gz.px2"),
+                .then(|| relative(layout.root(), &layout.bam())),
+            mcool: relative(layout.root(), &layout.mcool()),
+            compressed_pairs: c
+                .compressed_pairs
+                .then(|| relative(layout.root(), &layout.compressed_pairs())),
+            pairix_index: c
+                .compressed_pairs
+                .then(|| relative(layout.root(), &layout.pairix())),
+            report_html: relative(layout.root(), &layout.report_html()),
+            report_json: relative(layout.root(), &layout.report_json()),
         },
         notes,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_report(
-    out: &Path,
+    layout: &Layout,
     destination: &Path,
+    html_path: &Path,
+    json_path: &Path,
     c: &Config,
     elapsed_seconds: f64,
     contact_path: &Path,
@@ -496,15 +521,12 @@ fn write_report(
             destination.display()
         )
     }
-    for name in ["report.html", "report.json"] {
-        if destination.join(name).exists() {
-            bail!(
-                "report output already exists: {}",
-                destination.join(name).display()
-            )
+    for path in [html_path, json_path] {
+        if path.exists() {
+            bail!("report output already exists: {}", path.display())
         }
     }
-    let report = collect(out, c, elapsed_seconds, contact_path)?;
+    let report = collect(layout, c, elapsed_seconds, contact_path)?;
     let json = serde_json::to_vec_pretty(&report)?;
     let page = html::render(&report);
     let mut json_file = tempfile::NamedTempFile::new_in(destination)?;
@@ -514,18 +536,20 @@ fn write_report(
     let mut html_file = tempfile::NamedTempFile::new_in(destination)?;
     html_file.write_all(page.as_bytes())?;
     html_file.flush()?;
-    json_file.persist_noclobber(destination.join("report.json"))?;
-    html_file.persist_noclobber(destination.join("report.html"))?;
+    json_file.persist_noclobber(json_path)?;
+    html_file.persist_noclobber(html_path)?;
     Ok(())
 }
 
-pub(super) fn generate(out: &Path, c: &Config, elapsed_seconds: f64) -> Result<()> {
+pub(super) fn generate(layout: &Layout, c: &Config, elapsed_seconds: f64) -> Result<()> {
     write_report(
-        out,
-        out,
+        layout,
+        layout.root(),
+        &layout.report_html(),
+        &layout.report_json(),
         c,
         elapsed_seconds,
-        &out.join("contact-stats.json"),
+        &layout.contact_stats(),
     )
     .context("generate workflow report")
 }
@@ -533,6 +557,7 @@ pub(super) fn generate(out: &Path, c: &Config, elapsed_seconds: f64) -> Result<(
 pub(crate) fn regenerate(out: &Path, destination: Option<&Path>, recompute: bool) -> Result<()> {
     let out =
         fs::canonicalize(out).with_context(|| format!("open workflow result {}", out.display()))?;
+    // Control files always live at the result root, including for older runs.
     let status: serde_json::Value = read_json(&out.join("status.json"))?;
     if status.get("status").and_then(|v| v.as_str()) != Some("complete") {
         bail!("workflow result is not complete")
@@ -543,23 +568,31 @@ pub(crate) fn regenerate(out: &Path, destination: Option<&Path>, recompute: bool
         .context("missing elapsed time in status.json")?;
     let c: Config = serde_yaml::from_reader(File::open(out.join("config.resolved.yaml"))?)
         .context("parse resolved configuration")?;
+    let layout = Layout::for_existing(&out, &c)?;
+
     let destination = destination.unwrap_or(&out);
+    if !destination.is_dir() {
+        bail!(
+            "report destination must be an existing directory: {}",
+            destination.display()
+        )
+    }
+    let (html_path, json_path) = if destination == out.as_path() {
+        (layout.report_html(), layout.report_json())
+    } else {
+        (
+            destination.join("report.html"),
+            destination.join("report.json"),
+        )
+    };
+
     let temporary = if recompute {
-        if !out.join("filtered-nodups.pairs").is_file() {
+        if !layout.pairs().is_file() {
             bail!("cannot recompute contact statistics: final pairs were not retained; rerun with --keep-pairs")
         }
-        if !destination.is_dir() {
-            bail!(
-                "report destination must be an existing directory: {}",
-                destination.display()
-            )
-        }
-        for name in ["report.html", "report.json"] {
-            if destination.join(name).exists() {
-                bail!(
-                    "report output already exists: {}",
-                    destination.join(name).display()
-                )
+        for path in [&html_path, &json_path] {
+            if path.exists() {
+                bail!("report output already exists: {}", path.display())
             }
         }
         eprintln!(
@@ -568,7 +601,7 @@ pub(crate) fn regenerate(out: &Path, destination: Option<&Path>, recompute: bool
         let temp = tempfile::tempdir_in(destination)?;
         let status = crate::stage::stage_command(crate::stage::Stage::PairsStats)?
             .arg(temp.path().join("contact-stats.json"))
-            .stdin(File::open(out.join("filtered-nodups.pairs"))?)
+            .stdin(File::open(layout.pairs())?)
             .stdout(Stdio::null())
             .status()
             .context("recompute contact statistics")?;
@@ -582,11 +615,16 @@ pub(crate) fn regenerate(out: &Path, destination: Option<&Path>, recompute: bool
     let stats_path = temporary
         .as_ref()
         .map(|dir| dir.path().join("contact-stats.json"))
-        .unwrap_or_else(|| out.join("contact-stats.json"));
-    write_report(&out, destination, &c, elapsed, &stats_path)?;
-    println!(
-        "Report written to {}",
-        destination.join("report.html").display()
-    );
+        .unwrap_or_else(|| layout.contact_stats());
+    write_report(
+        &layout,
+        destination,
+        &html_path,
+        &json_path,
+        &c,
+        elapsed,
+        &stats_path,
+    )?;
+    println!("Report written to {}", html_path.display());
     Ok(())
 }

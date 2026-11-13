@@ -121,18 +121,54 @@ setting in an existing YAML file overrides these defaults.
 
 ## Pipeline outputs
 
-A successful `run` creates these files in `output_dir`:
+A successful `run` writes a grouped result directory. A `prefix` labels every
+data and QC file. It defaults to the R1 filename stem with a trailing mate token
+removed (`GM12878_100M_R1.fastq.gz` becomes `GM12878_100M`), or to the first
+pairs input's stem for a pairs run. Set `output.prefix` to override it:
+
+```yaml
+output:
+  prefix: GM12878_100M
+```
+
+```text
+result/
+├── matrix/<prefix>.mcool
+├── pairs/<prefix>.filtered-nodups.pairs              # --keep-pairs
+├── pairs/<prefix>.filtered-nodups.pairs.gz + .px2    # compressed_pairs
+├── alignments/<prefix>.bam                           # --keep-bam
+├── qc/<prefix>.report.html
+├── qc/<prefix>.report.json
+├── qc/<prefix>.contact-stats.json
+├── qc/<prefix>.filter-stats.json                     # restriction filtering
+├── logs/events.jsonl and stage logs
+├── logs/slurm/                                       # Slurm mode
+├── config.resolved.yaml
+├── status.json
+├── MANIFEST.tsv
+├── work-dir.txt                                      # retained on failure
+└── failure.json                                      # on failure
+```
 
 | File | Contents |
 | --- | --- |
-| `contacts.mcool` | Multi-resolution contact matrix. |
-| `filtered-nodups.pairs` | Sorted, filtered and deduplicated contacts, when `--keep-pairs` or `keep_pairs: true` is set. |
-| `alignments.bam` | Aligner-emitted records in one unsorted BAM, when `--keep-bam` or `keep_bam: true` is set. |
-| `filtered-nodups.pairs.gz` and `.px2` | Optional compressed pairs and pairix index when `compressed_pairs: true`. |
-| `status.json` | Completion status and elapsed time. |
-| `events.jsonl` and stage logs | Progress and diagnostic details. |
-| `report.html` | Offline, formatted run report. |
-| `report.json` | Machine-readable report with counts, timings and matrix balance status. |
+| `matrix/<prefix>.mcool` | Multi-resolution contact matrix. |
+| `pairs/<prefix>.filtered-nodups.pairs` | Sorted, filtered and deduplicated contacts, when `--keep-pairs` or `keep_pairs: true` is set. |
+| `pairs/<prefix>.filtered-nodups.pairs.gz` and `.px2` | Optional compressed pairs and pairix index when `compressed_pairs: true`. |
+| `alignments/<prefix>.bam` | Aligner-emitted records in one unsorted BAM, when `--keep-bam` or `keep_bam: true` is set. |
+| `qc/...` | Run report and machine-readable statistics. |
+| `logs/` | Progress events and stage logs; `logs/slurm/` holds scheduler logs. |
+| `status.json` | Completion status and elapsed time. `failure.json` records a failed run. |
+| `MANIFEST.tsv` | Size and path of every file in the result, relative to its root. |
+
+`output.prefix` must be a single filename component: ASCII letters, digits,
+`.`, `_` and `-`, at most 128 characters, and it cannot start or end with `.`
+or contain `..`. A derived prefix that fails these rules stops preflight with a
+message asking for an explicit `output.prefix`.
+
+Older results used a flat directory (`contacts.mcool`,
+`filtered-nodups.pairs`, `report.json`, and stage logs at the top level).
+`run report` still reads those results; new runs always use the grouped layout.
 
 The mcool stores its chromosome, pixel, bin and index datasets with gzip compression.
 By default, chromosomes are sorted in natural numeric order. Standard
@@ -155,7 +191,7 @@ FASTQ input.
 
 ## Run report
 
-Open `report.html` in a web browser after a successful `run`. It is self-contained
+Open `qc/<prefix>.report.html` in a web browser after a successful `run`. It is self-contained
 and does not need an internet connection. It summarizes input read-pair counts
 when available, contacts after each processing stage, duplicates, cis/trans and
 distance distributions, strand and pair-type composition, matrix balance
@@ -166,7 +202,7 @@ deduplication count. In local mode, alignment and chunk preparation overlap.
 In Slurm mode, chunk preparation follows the alignment array and total elapsed
 time includes scheduler waits.
 
-`report.json` contains the same statistics for downstream tools. Missing or
+`qc/<prefix>.report.json` contains the same statistics for downstream tools. Missing or
 unavailable values are `null`, not zero. A resolution with no usable balance
 weights is reported separately from converged or non-converged resolutions.
 The report summarizes observable results; it does not assign a pass/fail
@@ -179,6 +215,10 @@ directory for the two report files:
 mkdir report-output
 ./rust-hic run report existing-result --output report-output
 ```
+
+With `--output`, the two files are written directly into the chosen directory as
+`report.html` and `report.json`. Without it, regeneration writes
+`qc/<prefix>.report.html` and `qc/<prefix>.report.json` in the result directory.
 
 Older runs did not record distance, strand and pair-type distributions; these
 are marked unavailable. Add `--recompute-contact-stats` to read the entire
@@ -300,7 +340,7 @@ set the corresponding `fastq.sam` fields `min_mapq`, `max_molecule_size`, and
 ## Compressed pairs
 
 With `compressed_pairs: true`, the pipeline also writes
-`filtered-nodups.pairs.gz` and its `.px2` pairix index in Rust, using the
+`pairs/<prefix>.filtered-nodups.pairs.gz` and its `.px2` pairix index in Rust, using the
 specified `compression_threads` (default 4). Compression reads the temporary
 plain pairs after matrix generation, so its time is included in the pipeline
 total and it requires space for both files.
@@ -502,7 +542,7 @@ rebuilding recovery points; interior paired IDs are validated when each chunk is
 Fix the reported problem and run it again; it does not reserve space or prevent
 files from changing after the check. A regular `run` performs the same
 preflight automatically. If the pipeline fails after creating its output
-directory, inspect `failure.json` if present, `events.jsonl`, stage logs, and the scratch
+directory, inspect `failure.json` if present, `logs/events.jsonl`, stage logs, and the scratch
 path in `work-dir.txt`. Scratch is retained on failure.
 Choose a new output directory for a retry; existing outputs are not overwritten.
 
