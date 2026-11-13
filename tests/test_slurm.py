@@ -253,6 +253,13 @@ class SlurmWorkflow(unittest.TestCase):
         self.assertEqual(finish.returncode, 0, finish.stderr)
         self.assertFalse(work.exists())
         self.assertFalse((out / 'work-dir.txt').exists())
+        manifest = (out / 'MANIFEST.tsv').read_text().splitlines()
+        self.assertEqual(manifest[0], 'size_bytes\tpath')
+        for entry in manifest[1:]:
+            size, name = entry.split('\t', 1)
+            path = out / name
+            self.assertTrue(path.is_file(), f'manifest references missing file: {name}')
+            self.assertEqual(path.stat().st_size, int(size), name)
         self.assertTrue(layout.bam(out).is_file())
         self.assertEqual(json.loads((out / 'status.json').read_text())['status'], 'complete')
         report = json.loads(layout.qc(out, 'report.json').read_text())

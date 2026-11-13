@@ -425,12 +425,6 @@ fn run_finish(plan: &Plan, layout: &Layout, c: &mut Config) -> Result<()> {
             "status":"complete", "elapsed_seconds":started.elapsed().as_secs_f64()
         }),
     )?;
-    if let Err(e) = layout.write_manifest() {
-        eprintln!(
-            "warning: unable to write {}: {e:#}",
-            layout.manifest().display()
-        );
-    }
     // Publish the completed result before deleting scratch. If a node is lost
     // during cleanup, the matrix and its completion status remain usable.
     match fs::remove_dir_all(&plan.work) {
@@ -445,5 +439,11 @@ fn run_finish(plan: &Plan, layout: &Layout, c: &mut Config) -> Result<()> {
         ),
     }
     eprintln!("report: {}", layout.report_html().display());
+    if let Err(e) = layout.write_manifest() {
+        eprintln!(
+            "warning: unable to write {}: {e:#}",
+            layout.manifest().display()
+        );
+    }
     Ok(())
 }
