@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 import unittest
 
+import layout_helpers as layout
+
 ROOT = Path(__file__).resolve().parent.parent
 BIN = Path(os.environ.get('RUST_HIC_BIN', ROOT / 'target/release/rust-hic'))
 PAIRTOOLS = os.environ.get('RUST_HIC_PAIRTOOLS', 'pairtools')
@@ -69,7 +71,7 @@ class PairtoolsDedup(unittest.TestCase):
             result = subprocess.run([str(BIN), 'run', str(config)], capture_output=True,
                                     text=True, timeout=120)
             self.assertEqual(result.returncode, 0, result.stderr)
-            result_pairs = (tmp / 'run-result' / 'filtered-nodups.pairs').read_text()
+            result_pairs = layout.pairs(tmp / 'run-result').read_text()
             self.assertEqual(len([x for x in result_pairs.splitlines()
                                   if not x.startswith('#')]), 2)
 

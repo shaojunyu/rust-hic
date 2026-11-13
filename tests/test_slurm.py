@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 import h5py
 import numpy as np
 
+import layout_helpers as layout
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / 'tests' / 'data'
 BIN = Path(os.environ.get('RUST_HIC_BIN', ROOT / 'target/release/rust-hic')).resolve()
@@ -186,9 +188,9 @@ class SlurmWorkflow(unittest.TestCase):
             result = call(BIN, 'run', config, *mode, env=self.env)
             self.assertEqual(result.returncode, 0, result.stderr)
             outputs.append(out)
-        self.assertEqual((outputs[0] / 'filtered-nodups.pairs').read_bytes(),
-                         (outputs[1] / 'filtered-nodups.pairs').read_bytes())
-        with h5py.File(outputs[0] / 'contacts.mcool') as a, h5py.File(outputs[1] / 'contacts.mcool') as b:
+        self.assertEqual(layout.pairs(outputs[0]).read_bytes(),
+                         layout.pairs(outputs[1]).read_bytes())
+        with h5py.File(layout.mcool(outputs[0])) as a, h5py.File(layout.mcool(outputs[1])) as b:
             for resolution in (1000, 2000):
                 for col in ('bin1_id', 'bin2_id', 'count'):
                     np.testing.assert_array_equal(a[f'resolutions/{resolution}/pixels/{col}'][:],
@@ -228,7 +230,7 @@ class SlurmWorkflow(unittest.TestCase):
         self.assertIn('--dependency=afterany:1002', requests[2]['args'])
         self.assertIn('--no-requeue', requests[2]['args'])
         self.assertIn('--qos=normal', requests[0]['args'])
-        self.assertTrue(any("result's %%J/slurm/" in arg for arg in requests[1]['args']))
+        self.assertTrue(any("result's %%J/logs/slurm/" in arg for arg in requests[1]['args']))
         work = Path((out / 'work-dir.txt').read_text().strip())
         result = self.stage(work, 'index')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -251,9 +253,16 @@ class SlurmWorkflow(unittest.TestCase):
         self.assertEqual(finish.returncode, 0, finish.stderr)
         self.assertFalse(work.exists())
         self.assertFalse((out / 'work-dir.txt').exists())
-        self.assertTrue((out / 'alignments.bam').is_file())
+        manifest = (out / 'MANIFEST.tsv').read_text().splitlines()
+        self.assertEqual(manifest[0], 'size_bytes\tpath')
+        for entry in manifest[1:]:
+            size, name = entry.split('\t', 1)
+            path = out / name
+            self.assertTrue(path.is_file(), f'manifest references missing file: {name}')
+            self.assertEqual(path.stat().st_size, int(size), name)
+        self.assertTrue(layout.bam(out).is_file())
         self.assertEqual(json.loads((out / 'status.json').read_text())['status'], 'complete')
-        report = json.loads((out / 'report.json').read_text())
+        report = json.loads(layout.qc(out, 'report.json').read_text())
         self.assertEqual(report['input']['aligner'], 'bwa-mem3')
         self.assertEqual(report['counts']['input_read_pairs'], 1024)
         self.assertTrue(any('Slurm' in item['stage'] for item in report['timings']))
@@ -262,16 +271,16 @@ class SlurmWorkflow(unittest.TestCase):
         self.assertIn('Alignment through chunk preparation (includes waits)',
                       [item['stage'] for item in report['timings']])
         if SAMTOOLS.is_file():
-            self.assertEqual(call(SAMTOOLS, 'quickcheck', out / 'alignments.bam').returncode, 0)
-            self.assertGreaterEqual(int(call(SAMTOOLS, 'view', '-c', out / 'alignments.bam').stdout), 2048)
+            self.assertEqual(call(SAMTOOLS, 'quickcheck', layout.bam(out)).returncode, 0)
+            self.assertGreaterEqual(int(call(SAMTOOLS, 'view', '-c', layout.bam(out)).stdout), 2048)
         local = self.root / 'local'
         config = self.root / 'local.json'
         config.write_text(json.dumps({**self.base, 'output_dir': str(local)}))
         result = call(BIN, 'run', config, '--keep-bam', env=self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((out / 'filtered-nodups.pairs').read_bytes(),
-                         (local / 'filtered-nodups.pairs').read_bytes())
-        with h5py.File(out / 'contacts.mcool') as a, h5py.File(local / 'contacts.mcool') as b:
+        self.assertEqual(layout.pairs(out).read_bytes(),
+                         layout.pairs(local).read_bytes())
+        with h5py.File(layout.mcool(out)) as a, h5py.File(layout.mcool(local)) as b:
             for resolution in (1000, 2000):
                 for col in ('bin1_id', 'bin2_id', 'count'):
                     np.testing.assert_array_equal(a[f'resolutions/{resolution}/pixels/{col}'][:],
@@ -291,7 +300,7 @@ class SlurmWorkflow(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('chunk 1 is incomplete', result.stderr)
         self.assertTrue((out / 'failure.json').is_file())
-        self.assertFalse((out / 'contacts.mcool').exists())
+        self.assertFalse(layout.has_mcool(out))
         self.assertTrue(work.is_dir())
         status = call(BIN, 'run', 'status', out, env=self.env)
         self.assertIn('Workflow: failed', status.stdout)
@@ -349,17 +358,17 @@ class SlurmWorkflow(unittest.TestCase):
         result = self.stage(work, 'finish')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(index.is_dir())  # An externally owned index is retained.
-        self.assertTrue((out / 'filtered-nodups.pairs.gz.px2').is_file())
+        self.assertTrue(layout.pairix(out).is_file())
         local = self.root / 'restriction-local'
         config = self.root / 'restriction-local.json'
         config.write_text(json.dumps({**self.base, 'output_dir': str(local)}))
         result = call(BIN, 'run', config, env=self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((out / 'filtered-nodups.pairs').read_bytes(),
-                         (local / 'filtered-nodups.pairs').read_bytes())
-        self.assertEqual(json.loads((out / 'filter-stats.json').read_text()),
-                         json.loads((local / 'filter-stats.json').read_text()))
-        with h5py.File(out / 'contacts.mcool') as a, h5py.File(local / 'contacts.mcool') as b:
+        self.assertEqual(layout.pairs(out).read_bytes(),
+                         layout.pairs(local).read_bytes())
+        self.assertEqual(json.loads(layout.qc(out, 'filter-stats.json').read_text()),
+                         json.loads(layout.qc(local, 'filter-stats.json').read_text()))
+        with h5py.File(layout.mcool(out)) as a, h5py.File(layout.mcool(local)) as b:
             for col in ('bin1_id', 'bin2_id', 'count'):
                 np.testing.assert_array_equal(a[f'resolutions/1000/pixels/{col}'][:],
                                               b[f'resolutions/1000/pixels/{col}'][:])
@@ -381,7 +390,7 @@ class SlurmWorkflow(unittest.TestCase):
         result = self.stage(work, 'finish')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('read 1024 pairs but expected 1025', result.stderr)
-        self.assertFalse((out / 'contacts.mcool').exists())
+        self.assertFalse(layout.has_mcool(out))
 
     def test_changed_chunk_is_not_reused(self):
         out = self.root / 'changed-chunk'
@@ -416,15 +425,15 @@ class SlurmWorkflow(unittest.TestCase):
         result = self.stage(work, 'finish')
         self.assertEqual(result.returncode, 0, result.stderr)
         if SAMTOOLS.is_file():
-            self.assertEqual(call(SAMTOOLS, 'quickcheck', out / 'alignments.bam').returncode, 0)
+            self.assertEqual(call(SAMTOOLS, 'quickcheck', layout.bam(out)).returncode, 0)
         local = self.root / 'chromap-local'
         config = self.root / 'chromap-local.json'
         config.write_text(json.dumps({**self.base, 'output_dir': str(local)}))
         result = call(BIN, 'run', config, env=self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((out / 'filtered-nodups.pairs').read_bytes(),
-                         (local / 'filtered-nodups.pairs').read_bytes())
-        report = json.loads((out / 'report.json').read_text())
+        self.assertEqual(layout.pairs(out).read_bytes(),
+                         layout.pairs(local).read_bytes())
+        report = json.loads(layout.qc(out, 'report.json').read_text())
         self.assertEqual(report['input']['aligner'], 'chromap')
         self.assertEqual(report['counts']['input_read_pairs'], 1024)
 
@@ -443,7 +452,7 @@ class SlurmWorkflow(unittest.TestCase):
         result = self.stage(work, 'map', 0)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('configuration changed', result.stderr)
-        self.assertFalse((out / 'contacts.mcool').exists())
+        self.assertFalse(layout.has_mcool(out))
 
     def test_submission_failure_cancels_own_jobs_and_cancel_only_targets_active(self):
         out = self.root / 'submit-failure'

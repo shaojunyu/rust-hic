@@ -1,5 +1,5 @@
 //! Prepare completed mapping chunks while other chunks are still aligning.
-use super::{config::Config, log, RunClock};
+use super::{config::Config, layout::Layout, log, RunClock};
 use crate::{
     mapping::align,
     pairs::filter,
@@ -22,12 +22,12 @@ use std::{
 pub(super) fn sort_one(
     c: &Config,
     work: &Path,
-    out: &Path,
+    logs: &Path,
     i: usize,
     input: &Path,
     output: &Path,
 ) -> Result<()> {
-    let log_path = out.join(format!("sort-{i:04}.log"));
+    let log_path = logs.join(format!("sort-{i:04}.log"));
     let f = File::create(&log_path)?;
     let status = stage_command(Stage::SortPairs)?
         .arg(&c.chromsizes)
@@ -56,7 +56,7 @@ pub(super) fn sort_one(
 
 fn filter_one(
     c: &Config,
-    out: &Path,
+    layout: &Layout,
     i: usize,
     input: &Path,
     output: &Path,
@@ -66,8 +66,8 @@ fn filter_one(
         .fragments
         .as_ref()
         .context("missing restriction fragments")?;
-    let log_path = out.join(format!("filter-{i:04}.log"));
-    let stats_path = out.join(format!("filter-{i:04}-stats.json"));
+    let log_path = layout.log(&format!("filter-{i:04}"));
+    let stats_path = layout.logs().join(format!("filter-{i:04}-stats.json"));
     let mut command = stage_command(Stage::FilterPairs)?;
     super::process::limit_command(&mut command, cpus);
     let status = command
@@ -98,7 +98,7 @@ fn filter_one(
 }
 
 fn chunk_event(
-    out: &Path,
+    logs: &Path,
     lock: &Mutex<()>,
     name: &str,
     chunk: usize,
@@ -111,7 +111,7 @@ fn chunk_event(
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(out.join("events.jsonl"))?;
+        .open(logs.join("events.jsonl"))?;
     writeln!(file, "{event}")?;
     eprintln!("{event}");
     Ok(())
@@ -134,7 +134,7 @@ fn prepared_paths(c: &Config, work: &Path, chunks: usize) -> Vec<PathBuf> {
 fn prepare_one(
     c: &Config,
     work: &Path,
-    out: &Path,
+    layout: &Layout,
     i: usize,
     input: &Path,
     output: &Path,
@@ -142,27 +142,29 @@ fn prepare_one(
     cpus: Option<&libc::cpu_set_t>,
     event_lock: &Mutex<()>,
 ) -> Result<()> {
-    chunk_event(out, event_lock, "sort_chunk_start", i, started)?;
+    let logs = layout.logs();
+    chunk_event(&logs, event_lock, "sort_chunk_start", i, started)?;
     let sorted = work.join(format!("sorted-{i:04}.pairs"));
-    sort_one(c, work, out, i, input, &sorted)?;
-    chunk_event(out, event_lock, "sort_chunk_done", i, started)?;
+    sort_one(c, work, &logs, i, input, &sorted)?;
+    chunk_event(&logs, event_lock, "sort_chunk_done", i, started)?;
     if c.fragments.is_some() {
-        chunk_event(out, event_lock, "filter_chunk_start", i, started)?;
-        filter_one(c, out, i, &sorted, output, cpus)?;
-        chunk_event(out, event_lock, "filter_chunk_done", i, started)?;
+        chunk_event(&logs, event_lock, "filter_chunk_start", i, started)?;
+        filter_one(c, layout, i, &sorted, output, cpus)?;
+        chunk_event(&logs, event_lock, "filter_chunk_done", i, started)?;
     }
     Ok(())
 }
 
-fn finish_preparation(c: &Config, out: &Path, chunks: usize, started: RunClock) -> Result<()> {
+fn finish_preparation(c: &Config, layout: &Layout, chunks: usize, started: RunClock) -> Result<()> {
+    let logs = layout.logs();
     if c.fragments.is_some() {
         let stats: Vec<_> = (0..chunks)
-            .map(|i| out.join(format!("filter-{i:04}-stats.json")))
+            .map(|i| logs.join(format!("filter-{i:04}-stats.json")))
             .collect();
-        filter::combine_stats(&stats, &out.join("filter-stats.json"))?;
-        fs::write(out.join("filter.log"), format!("Restriction filtering completed independently for {chunks} chunks; see filter-NNNN.log.\n"))?;
+        filter::combine_stats(&stats, &layout.filter_stats())?;
+        fs::write(layout.log("filter"), format!("Restriction filtering completed independently for {chunks} chunks; see filter-NNNN.log.\n"))?;
     }
-    log(out, "sort_done", started)
+    log(&logs, "sort_done", started)
 }
 
 /// Sort and optionally filter already mapped chunks on the current node.
@@ -170,7 +172,7 @@ pub(super) fn prepare_mapped(
     c: &Config,
     inputs: &[PathBuf],
     work: &Path,
-    out: &Path,
+    layout: &Layout,
     started: RunClock,
     cpus: Option<&libc::cpu_set_t>,
 ) -> Result<Vec<PathBuf>> {
@@ -183,7 +185,7 @@ pub(super) fn prepare_mapped(
     let next = AtomicUsize::new(0);
     let failed = AtomicBool::new(false);
     let errors = Mutex::new(Vec::new());
-    log(out, "sort_start", started)?;
+    log(&layout.logs(), "sort_start", started)?;
     thread::scope(|scope| {
         for _ in 0..c.resources.sort_jobs.min(chunks) {
             let event_lock = &event_lock;
@@ -200,7 +202,7 @@ pub(super) fn prepare_mapped(
                     break;
                 }
                 if let Err(e) = prepare_one(
-                    c, work, out, i, &inputs[i], &paths[i], started, cpus, event_lock,
+                    c, work, layout, i, &inputs[i], &paths[i], started, cpus, event_lock,
                 ) {
                     failed.store(true, Ordering::Release);
                     errors.lock().unwrap().push(format!("chunk {i}: {e:#}"));
@@ -212,7 +214,7 @@ pub(super) fn prepare_mapped(
     if !errors.is_empty() {
         bail!("chunk preparation failed: {}", errors.join("; "))
     }
-    finish_preparation(c, out, chunks, started)?;
+    finish_preparation(c, layout, chunks, started)?;
     Ok(paths)
 }
 
@@ -221,14 +223,14 @@ pub(super) fn map_and_prepare(
     fastq: &align::FastqConfig,
     index: &Path,
     work: &Path,
-    out: &Path,
+    layout: &Layout,
     started: RunClock,
     cpus: Option<&libc::cpu_set_t>,
 ) -> Result<Vec<PathBuf>> {
     let chunks = fastq.chunks.context("missing index chunk count")?;
     let paths = prepared_paths(c, work, chunks);
-    log(out, "alignment_start", started)?;
-    log(out, "sort_start", started)?;
+    log(&layout.logs(), "alignment_start", started)?;
+    log(&layout.logs(), "sort_start", started)?;
     let event_lock = Mutex::new(());
     let failed = AtomicBool::new(false);
     let result = thread::scope(|scope| -> Result<()> {
@@ -245,7 +247,7 @@ pub(super) fn map_and_prepare(
                         break;
                     }
                     let result = prepare_one(
-                        c, work, out, i, &input, &paths[i], started, cpus, event_lock,
+                        c, work, layout, i, &input, &paths[i], started, cpus, event_lock,
                     );
                     if let Err(e) = result {
                         failed.store(true, Ordering::Release);
@@ -260,12 +262,18 @@ pub(super) fn map_and_prepare(
             fastq,
             index,
             work,
-            out,
+            &layout.logs(),
             None,
             &failed,
             c.keep_bam,
             |i, path| {
-                chunk_event(out, &event_lock, "alignment_chunk_done", i, started)?;
+                chunk_event(
+                    &layout.logs(),
+                    &event_lock,
+                    "alignment_chunk_done",
+                    i,
+                    started,
+                )?;
                 if failed.load(Ordering::Acquire) {
                     bail!("chunk preparation failed")
                 }
@@ -282,7 +290,7 @@ pub(super) fn map_and_prepare(
             let _guard = event_lock
                 .lock()
                 .map_err(|_| anyhow::anyhow!("event log lock poisoned"))?;
-            log(out, "alignment_done", started)
+            log(&layout.logs(), "alignment_done", started)
         } else {
             Ok(())
         };
@@ -305,6 +313,6 @@ pub(super) fn map_and_prepare(
         Ok(())
     });
     result?;
-    finish_preparation(c, out, chunks, started)?;
+    finish_preparation(c, layout, chunks, started)?;
     Ok(paths)
 }

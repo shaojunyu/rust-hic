@@ -2,6 +2,7 @@
 mod chunks;
 pub(crate) mod config;
 pub(crate) mod digest;
+pub(crate) mod layout;
 pub(crate) mod pairix;
 pub(crate) mod preflight;
 pub(crate) mod process;
@@ -84,7 +85,14 @@ pub(crate) fn run(path: &Path, check: bool, keep_pairs: bool, keep_bam: bool) ->
             c.output_dir.display(),
             c.scratch_dir.display()
         );
-        if let Some(fastq) = c.fastq {
+        let layout = layout::Layout::from_config(&c.output_dir, &c)?;
+        println!(
+            "  Prefix: {}\n  Matrix: {}\n  Report: {}",
+            layout.prefix(),
+            layout.mcool().display(),
+            layout.report_html().display()
+        );
+        if let Some(fastq) = &c.fastq {
             println!(
                 "  FASTQ: {} and {}\n  Aligner: {}\n  Indexing threads per FASTQ: {}",
                 fastq.read1.display(),
@@ -112,40 +120,48 @@ pub(crate) fn run_config(
     fs::create_dir(&c.output_dir)
         .with_context(|| format!("create new output directory {}", c.output_dir.display()))?;
     let out = fs::canonicalize(&c.output_dir)?;
+    let layout = layout::Layout::new(
+        &out,
+        c.output
+            .prefix
+            .as_deref()
+            .context("output prefix was not resolved by preflight")?,
+    )?;
+    layout.create_dirs(c.keep_bam)?;
     let outcome = (|| -> Result<()> {
-        serde_yaml::to_writer(File::create(out.join("config.resolved.yaml"))?, &c)?;
-        log(&out, "pipeline_start", started)?;
+        serde_yaml::to_writer(File::create(layout.config_resolved())?, &c)?;
+        log(&layout.logs(), "pipeline_start", started)?;
         let work = tempfile::Builder::new()
             .prefix("rust-hic-")
             .tempdir_in(&c.scratch_dir)?
             .keep();
-        fs::write(out.join("work-dir.txt"), format!("{}\n", work.display()))?;
+        fs::write(layout.work_dir_file(), format!("{}\n", work.display()))?;
         if let Some(digest) = &c.digest {
-            log(&out, "digest_start", started)?;
+            log(&layout.logs(), "digest_start", started)?;
             let bed = work.join("restriction-fragments.bed");
             digest::digest(digest, &c.chromsizes, &bed)?;
             c.fragments = Some(bed);
-            log(&out, "digest_done", started)?;
+            log(&layout.logs(), "digest_done", started)?;
         }
         let prefiltered = c.fastq.is_some() && c.fragments.is_some();
         let sorted = if let Some(fastq) = &mut c.fastq {
             let indexer = env::current_exe()?;
-            log(&out, "fastq_index_start", started)?;
+            log(&layout.logs(), "fastq_index_start", started)?;
             let idx = align::index(
                 fastq,
                 &indexer,
                 &work.join("fastq-index"),
-                &out.join("fastq-index.log"),
+                &layout.log("fastq-index"),
                 false,
                 false,
             )?;
-            log(&out, "fastq_index_done", started)?;
+            log(&layout.logs(), "fastq_index_done", started)?;
             let sorted = chunks::map_and_prepare(
                 &c,
                 c.fastq.as_ref().context("missing FASTQ configuration")?,
                 &idx,
                 &work,
-                &out,
+                &layout,
                 started,
                 postprocess_cpus.as_ref(),
             )?;
@@ -158,14 +174,14 @@ pub(crate) fn run_config(
                 let parts: Vec<_> = (0..count)
                     .map(|i| work.join(format!("align-{i:04}/alignments.bam")))
                     .collect();
-                crate::mapping::bam::merge(&parts, &out.join("alignments.bam"))?;
-                log(&out, "bam_merge_done", started)?;
+                crate::mapping::bam::merge(&parts, &layout.bam())?;
+                log(&layout.logs(), "bam_merge_done", started)?;
             }
             sorted
         } else if c.input_sorted {
             c.input_pairs.clone()
         } else {
-            log(&out, "sort_start", started)?;
+            log(&layout.logs(), "sort_start", started)?;
             let paths = Arc::new(
                 (0..c.input_pairs.len())
                     .map(|i| work.join(format!("sorted-{i:04}.pairs")))
@@ -173,13 +189,14 @@ pub(crate) fn run_config(
             );
             let next = AtomicUsize::new(0);
             let errors = Mutex::new(Vec::new());
+            let logs = layout.logs();
             thread::scope(|scope| {
                 for _ in 0..r.sort_jobs.min(c.input_pairs.len()) {
                     let paths = Arc::clone(&paths);
                     let next = &next;
                     let errors = &errors;
                     let c = &c;
-                    let out = &out;
+                    let logs = &logs;
                     let work = &work;
                     scope.spawn(move || loop {
                         let i = next.fetch_add(1, Ordering::Relaxed);
@@ -187,7 +204,7 @@ pub(crate) fn run_config(
                             break;
                         }
                         let result = (|| -> Result<()> {
-                            chunks::sort_one(c, work, out, i, &c.input_pairs[i], &paths[i])?;
+                            chunks::sort_one(c, work, logs, i, &c.input_pairs[i], &paths[i])?;
                             Ok(())
                         })();
                         if let Err(e) = result {
@@ -200,13 +217,13 @@ pub(crate) fn run_config(
             if !errors.is_empty() {
                 bail!("{}", errors.join("; "))
             }
-            log(&out, "sort_done", started)?;
+            log(&layout.logs(), "sort_done", started)?;
             Arc::try_unwrap(paths).unwrap()
         };
         finish_stages(
             &c,
             &work,
-            &out,
+            &layout,
             &sorted,
             prefiltered,
             pairs_only,
@@ -217,22 +234,28 @@ pub(crate) fn run_config(
             fs::remove_dir_all(&work).with_context(|| {
                 format!("remove completed scratch workspace {}", work.display())
             })?;
-            fs::remove_file(out.join("work-dir.txt"))?;
+            fs::remove_file(layout.work_dir_file())?;
         }
-        log(&out, "pipeline_done", started)?;
+        log(&layout.logs(), "pipeline_done", started)?;
         fs::write(
-            out.join("status.json"),
+            layout.status(),
             format!(
                 "{{\"status\":\"complete\",\"elapsed_seconds\":{:.3}}}\n",
                 started.elapsed().as_secs_f64()
             ),
         )?;
+        if let Err(e) = layout.write_manifest() {
+            eprintln!(
+                "warning: unable to write {}: {e:#}",
+                layout.manifest().display()
+            );
+        }
         Ok(())
     })();
     if let Err(error) = &outcome {
         let record = serde_json::json!({"status":"failed","elapsed_seconds":started.elapsed().as_secs_f64(),"error":format!("{error:#}")});
-        let _ = fs::write(out.join("failure.json"), format!("{record}\n"));
-        let _ = log(&out, "pipeline_failed", started);
+        let _ = fs::write(layout.failure(), format!("{record}\n"));
+        let _ = log(&layout.logs(), "pipeline_failed", started);
     }
     outcome
 }
@@ -241,7 +264,7 @@ pub(crate) fn run_config(
 pub(super) fn finish_stages(
     c: &Config,
     work: &Path,
-    out: &Path,
+    layout: &layout::Layout,
     sorted: &[PathBuf],
     prefiltered: bool,
     pairs_only: bool,
@@ -249,7 +272,8 @@ pub(super) fn finish_stages(
     postprocess_cpus: &Option<libc::cpu_set_t>,
 ) -> Result<()> {
     let r = c.resources.clone();
-    log(out, "merge_filter_dedup_start", started)?;
+    let logs = layout.logs();
+    log(&logs, "merge_filter_dedup_start", started)?;
     let mut merger = stage_command(Stage::MergePairs)?;
     merger
         .arg(r.merge_workers.to_string())
@@ -258,7 +282,7 @@ pub(super) fn finish_stages(
     let mut cmds = vec![("merge".into(), merger)];
     if let Some(bed) = c.fragments.as_ref().filter(|_| !prefiltered) {
         let mut f = stage_command(Stage::FilterPairs)?;
-        f.arg(bed).arg(out.join("filter-stats.json"));
+        f.arg(bed).arg(layout.filter_stats());
         cmds.push(("filter".into(), f))
     }
     let mut d = stage_command(Stage::DedupPairs)?;
@@ -267,18 +291,18 @@ pub(super) fn finish_stages(
     cmds.push(("dedup".into(), d));
     if !pairs_only {
         let mut stats = stage_command(Stage::PairsStats)?;
-        stats.arg(out.join("contact-stats.json"));
+        stats.arg(layout.contact_stats());
         cmds.push(("contact".into(), stats));
     }
     let pairs = if pairs_only || c.keep_pairs {
-        out.join("filtered-nodups.pairs")
+        layout.pairs()
     } else {
         work.join("filtered-nodups.pairs")
     };
-    pipe(cmds, &pairs, out, postprocess_cpus.as_ref())?;
-    log(out, "merge_filter_dedup_done", started)?;
+    pipe(cmds, &pairs, &logs, postprocess_cpus.as_ref())?;
+    log(&logs, "merge_filter_dedup_done", started)?;
     if !pairs_only {
-        log(out, "cool_start", started)?;
+        log(&logs, "cool_start", started)?;
         let base_cool = work.join("base.cool");
         let mut cmd = stage_command(Stage::BinPairs)?;
         cmd.arg(&c.chromsizes)
@@ -289,13 +313,13 @@ pub(super) fn finish_stages(
             .arg(work)
             .arg(r.matrix_threads.to_string());
         crate::matrix::chromosome_options(&mut cmd, c.sort_chromosomes);
-        exec(cmd, out, "pairs-to-cool", postprocess_cpus.as_ref())?;
-        log(out, "cool_done", started)?;
-        log(out, "mcool_start", started)?;
+        exec(cmd, &logs, "pairs-to-cool", postprocess_cpus.as_ref())?;
+        log(&logs, "cool_done", started)?;
+        log(&logs, "mcool_start", started)?;
         let mut cmd = stage_command(Stage::BuildMcool)?;
         cmd.arg(&base_cool)
             .arg(&c.chromsizes)
-            .arg(out.join("contacts.mcool"))
+            .arg(layout.mcool())
             .arg(&c.assembly)
             .arg(
                 c.resolutions
@@ -310,10 +334,10 @@ pub(super) fn finish_stages(
                 c.balance_max_iterations.to_string(),
             );
         crate::matrix::chromosome_options(&mut cmd, c.sort_chromosomes);
-        exec(cmd, out, "cool-to-mcool", postprocess_cpus.as_ref())?;
-        log(out, "mcool_done", started)?;
+        exec(cmd, &logs, "cool-to-mcool", postprocess_cpus.as_ref())?;
+        log(&logs, "mcool_done", started)?;
         if c.compressed_pairs {
-            log(out, "pairix_start", started)?;
+            log(&logs, "pairix_start", started)?;
             let original_affinity = if let Some(mask) = &postprocess_cpus {
                 let original = current_affinity()?;
                 set_affinity(mask)?;
@@ -323,17 +347,17 @@ pub(super) fn finish_stages(
             };
             let result = pairix::pack(
                 &pairs,
-                &out.join("filtered-nodups.pairs.gz"),
+                &layout.compressed_pairs(),
                 r.compression_threads,
-                Some(&out.join("pairix.log")),
+                Some(&layout.log("pairix")),
             );
             let restored = original_affinity.as_ref().map(set_affinity).transpose();
             result?;
             restored?;
-            log(out, "pairix_done", started)?;
+            log(&logs, "pairix_done", started)?;
         }
-        report::generate(out, c, started.elapsed().as_secs_f64())?;
-        eprintln!("report: {}", out.join("report.html").display());
+        report::generate(layout, c, started.elapsed().as_secs_f64())?;
+        eprintln!("report: {}", layout.report_html().display());
     }
     Ok(())
 }

@@ -43,6 +43,9 @@ fastq:
 input_sorted: false  # Set true only for already-sorted pairs input.
 
 output_dir: new-result  # Must not already exist; its parent must exist.
+# Optional prefix for data and QC file names; derived from the R1 filename if omitted.
+# output:
+#   prefix: GM12878_100M
 scratch_dir: .  # Existing writable directory for intermediate files.
 # merge_scratch_dir: /path/to/existing/scratch  # Defaults to scratch_dir.
 keep_pairs: false  # Retain the final uncompressed pairs file.

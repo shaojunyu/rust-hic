@@ -3,7 +3,7 @@ use super::state::{hash_file, now_ms, record_failure, write_json, Jobs, Plan, SC
 use crate::{
     cli::run::SlurmOptions,
     mapping::align,
-    workflow::{config::Config, preflight},
+    workflow::{config::Config, layout::Layout, preflight},
 };
 use anyhow::{bail, Context, Result};
 use std::{
@@ -330,7 +330,13 @@ pub(crate) fn submit(
     fastq.chunks = Some(chunks);
     let parallel = fastq.jobs.min(chunks);
     let (index_cpus, map_cpus, finish_cpus) = job_cpus(&c, &args)?;
-    log_pattern(&c.output_dir.join("slurm/map-%A_%a.log"))?;
+    let prefix = c
+        .output
+        .prefix
+        .as_deref()
+        .context("output prefix was not resolved by preflight")?;
+    let layout = Layout::new(&c.output_dir, prefix)?;
+    log_pattern(&layout.slurm_logs().join("map-%A_%a.log"))?;
     let version = Command::new("sbatch")
         .arg("--version")
         .output()
@@ -351,8 +357,11 @@ pub(crate) fn submit(
     let finish_mem = args.finish_mem.as_deref().unwrap_or("64G");
     if check {
         println!(
-            "Slurm preflight passed\n  Output: {}\n  Scratch: {}\n  Chunks: {} (up to {} concurrent)\n  CPUs per job: index {}, map {}, finish {}\n  Memory per job: index {}, map {}, finish {}\n  Reused FASTQ indexes are verified on the compute node; ensure all paths are shared.",
+            "Slurm preflight passed\n  Output: {}\n  Prefix: {}\n  Matrix: {}\n  Report: {}\n  Scratch: {}\n  Chunks: {} (up to {} concurrent)\n  CPUs per job: index {}, map {}, finish {}\n  Memory per job: index {}, map {}, finish {}\n  Reused FASTQ indexes are verified on the compute node; ensure all paths are shared.",
             c.output_dir.display(),
+            layout.prefix(),
+            layout.mcool().display(),
+            layout.report_html().display(),
             c.scratch_dir.display(),
             chunks,
             parallel,
@@ -369,6 +378,9 @@ pub(crate) fn submit(
     fs::create_dir(&c.output_dir)
         .with_context(|| format!("create output {}", c.output_dir.display()))?;
     let out = fs::canonicalize(&c.output_dir)?;
+    let layout = Layout::new(&out, prefix)?;
+    layout.create_dirs(c.keep_bam)?;
+    layout.create_slurm_dirs()?;
     let work = tempfile::Builder::new()
         .prefix(WORK_PREFIX)
         .rand_bytes(8)
@@ -387,15 +399,14 @@ pub(crate) fn submit(
     if group_id.len() != 8 || !group_id.bytes().all(|b| b.is_ascii_alphanumeric()) {
         bail!("invalid random Slurm group ID")
     }
-    fs::write(out.join("work-dir.txt"), format!("{}\n", work.display()))?;
-    fs::create_dir(out.join("slurm"))?;
+    fs::write(layout.work_dir_file(), format!("{}\n", work.display()))?;
     fs::create_dir(work.join("chunks"))?;
     fs::create_dir(work.join("attempts"))?;
     let binary = work.join("rust-hic");
     fs::copy(env::current_exe()?, &binary)
         .context("copy executable to shared workflow directory")?;
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))?;
-    let resolved = out.join("config.resolved.yaml");
+    let resolved = layout.config_resolved();
     serde_yaml::to_writer(File::create(&resolved)?, &c)?;
     let plan = Plan {
         schema: SCHEMA,
@@ -420,7 +431,7 @@ pub(crate) fn submit(
         alignment: None,
         finish: None,
     };
-    let jobs_file = out.join("slurm-jobs.json");
+    let jobs_file = layout.slurm_jobs();
     write_json(&jobs_file, &jobs)?;
     let mut submitted = Vec::new();
     let result = (|| -> Result<()> {
@@ -428,7 +439,7 @@ pub(crate) fn submit(
             &args,
             JobStage::Index,
             &group_id,
-            &out.join("slurm/index-%j.log"),
+            &layout.slurm_logs().join("index-%j.log"),
             index_cpus,
             index_mem,
             args.index_time.as_deref().unwrap_or(time),
@@ -445,7 +456,7 @@ pub(crate) fn submit(
             &args,
             JobStage::Map,
             &group_id,
-            &out.join("slurm/map-%A_%a.log"),
+            &layout.slurm_logs().join("map-%A_%a.log"),
             map_cpus,
             map_mem,
             args.map_time.as_deref().unwrap_or(time),
@@ -463,7 +474,7 @@ pub(crate) fn submit(
             &args,
             JobStage::Finish,
             &group_id,
-            &out.join("slurm/finish-%j.log"),
+            &layout.slurm_logs().join("finish-%j.log"),
             finish_cpus,
             finish_mem,
             args.finish_time.as_deref().unwrap_or(time),

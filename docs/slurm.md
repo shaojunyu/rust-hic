@@ -92,7 +92,7 @@ is named `rust-hic-<group-id>-mapping-<chunk>`, with chunk numbers starting at
 zero. `status` shows the group ID and workflow state, and queries `squeue`;
 while the shared workspace exists, it also shows completed chunks. Slurm's
 `sacct` can provide finished job states and resource usage. Scheduler
-logs are in the result's `slurm/` directory. On failure, inspect `failure.json`
+logs are in the result's `logs/slurm/` directory. On failure, inspect `failure.json`
 if present, those logs, and the shared workspace named in `work-dir.txt`. `cancel` only
 cancels the recorded active jobs; it leaves output and scratch files for
 inspection.
