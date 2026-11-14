@@ -7,6 +7,7 @@ pub(crate) mod pairix;
 pub(crate) mod preflight;
 pub(crate) mod process;
 pub(crate) mod report;
+pub(crate) mod restriction;
 pub(crate) mod slurm;
 pub(crate) mod stage;
 
@@ -54,12 +55,58 @@ impl RunClock {
 
 pub(crate) fn log(dir: &Path, event: &str, start: RunClock) -> Result<()> {
     let record = serde_json::json!({"event":event,"elapsed_seconds":start.elapsed().as_secs_f64()});
+    log_record(dir, &record)
+}
+
+pub(crate) fn log_record(dir: &Path, record: &serde_json::Value) -> Result<()> {
     let mut f = OpenOptions::new()
         .create(true)
         .append(true)
         .open(dir.join("events.jsonl"))?;
     writeln!(f, "{}", record)?;
     eprintln!("{}", record);
+    Ok(())
+}
+
+/// Generate the configured restriction digest and report its timing and
+/// fragment counts in both `events.jsonl` and `logs/digest.log`.
+pub(crate) fn digest_stage(
+    c: &mut Config,
+    lay: &layout::Layout,
+    work: &Path,
+    started: RunClock,
+) -> Result<()> {
+    let Some(digest_config) = c.digest.clone() else {
+        return Ok(());
+    };
+    let logs = lay.logs();
+    log(&logs, "digest_start", started)?;
+    let bed = work.join("restriction-fragments.bed");
+    let stats = digest::digest(&digest_config, &c.chromsizes, &bed)?;
+    c.fragments = Some(bed);
+    let record = serde_json::json!({
+        "event": "digest_done",
+        "elapsed_seconds": started.elapsed().as_secs_f64(),
+        "digest_seconds": stats.elapsed_seconds,
+        "enzyme": &digest_config.enzyme,
+        "chromosomes": stats.chromosomes,
+        "cuts": stats.cuts,
+        "fragments": stats.fragments,
+    });
+    log_record(&logs, &record)?;
+    if let Err(e) = fs::write(
+        lay.log("digest"),
+        format!(
+            "event=digest_done enzyme={} chromosomes={} cuts={} fragments={} seconds={:.3}\n",
+            digest_config.enzyme,
+            stats.chromosomes,
+            stats.cuts,
+            stats.fragments,
+            stats.elapsed_seconds
+        ),
+    ) {
+        eprintln!("warning: unable to write digest log: {e:#}");
+    }
     Ok(())
 }
 fn path_from(base: &Path, p: &Path) -> PathBuf {
@@ -136,13 +183,7 @@ pub(crate) fn run_config(
             .tempdir_in(&c.scratch_dir)?
             .keep();
         fs::write(layout.work_dir_file(), format!("{}\n", work.display()))?;
-        if let Some(digest) = &c.digest {
-            log(&layout.logs(), "digest_start", started)?;
-            let bed = work.join("restriction-fragments.bed");
-            digest::digest(digest, &c.chromsizes, &bed)?;
-            c.fragments = Some(bed);
-            log(&layout.logs(), "digest_done", started)?;
-        }
+        digest_stage(&mut c, &layout, &work, started)?;
         let prefiltered = c.fastq.is_some() && c.fragments.is_some();
         let sorted = if let Some(fastq) = &mut c.fastq {
             let indexer = env::current_exe()?;

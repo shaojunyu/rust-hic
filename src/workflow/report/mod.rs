@@ -42,6 +42,8 @@ struct Input {
 #[derive(Serialize)]
 struct Restriction {
     mode: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enzyme: Option<String>,
     source: Option<PathBuf>,
     stats: Option<FilterStats>,
 }
@@ -430,12 +432,13 @@ fn collect(
     };
     let restriction = Restriction {
         mode: if c.digest.is_some() {
-            "arima_digest"
+            "digest"
         } else if c.fragments.is_some() {
             "bed"
         } else {
             "disabled"
         },
+        enzyme: c.digest.as_ref().map(|d| d.enzyme.clone()),
         source: c
             .digest
             .as_ref()

@@ -410,8 +410,8 @@ within a fragment are also removed. The remaining pairs are deduplicated and
 used to generate the matrix. Enabling this filter therefore changes the output.
 `filter-stats.json` records removed and retained counts.
 
-Choose a fragment definition that matches the actual experiment. For the
-two-enzyme Arima Hi-C scheme, enable in-silico digestion with:
+Choose a fragment definition that matches the actual experiment. For in-silico
+digestion from a FASTA, set `digest`:
 
 ```yaml
 digest:
@@ -419,13 +419,23 @@ digest:
   reference: hg38.fa
 ```
 
-The program scans the reference for MboI (`^GATC`) and HinfI (`G^ANTC`)
-sites and generates a BED using runHiC's coordinate convention. `^` marks
-the cleavage position and `N` is a variable base. The uncompressed FASTA
-must contain every chromosome in `chromsizes` at the stated length. The BED is
-written to the scratch workspace and removed after a successful run. On the hg38 reference used for local testing, the
-generated BED matched runHiC's byte for byte. This does not establish
-equivalence for every possible reference or Arima kit chemistry.
+`Arima` expands to the MboI + HinfI cocktail. Any built-in enzyme name can be
+used, for example `HindIII` or `EcoRI`; join names with `-` for a cocktail, for
+example `MboI-HinfI`. The built-in table is generated from Biopython's
+`Bio.Restriction` and contains 754 single-cut enzymes. Unknown names, and
+enzymes whose Biopython cut offsets are not integers, are rejected; supply a
+precomputed fragment BED for those. Enzyme names are matched case-insensitively;
+a typo or unsupported name fails preflight.
+
+The program scans the reference for the recognition sites and generates a BED
+using runHiC/Biopython's coordinate convention. `N` and the other IUPAC codes
+are supported in recognition sites. The uncompressed FASTA must contain every
+chromosome in `chromsizes` at the stated length. The BED is written to the
+scratch workspace and removed after a successful run. On the hg38 reference
+used for local testing, the Arima BED matches runHiC's byte for byte. This does
+not establish equivalence for every possible reference or enzyme chemistry.
+Digest timing and fragment counts are written to `logs/digest.log` and the
+`digest_done` event in `events.jsonl`.
 
 Alternatively, provide a precomputed fragment BED:
 
@@ -435,9 +445,10 @@ fragments: hg38.fragments.bed
 
 Use a BED from the correct reference assembly and enzyme or enzyme combination.
 It must contain three columns (chromosome, start, end), with contiguous
-intervals starting at zero for each chromosome. Automatic digestion currently
-supports only the two-enzyme Arima scheme; use a precomputed BED for other
-restriction enzymes. Specify at most one of `digest` and `fragments`.
+intervals starting at zero for each chromosome. Automatic digestion supports
+`Arima`, individual enzyme names, and `-`-separated cocktails; use a
+precomputed BED for enzyme names not in the table. Specify at most one of
+`digest` and `fragments`.
 
 For experiments without fixed restriction sites, such as Micro-C, leave both
 settings unset; do not use an unrelated restriction-fragment BED. The rest of

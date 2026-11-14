@@ -6,8 +6,7 @@ use super::state::{
 use crate::{
     mapping::align,
     workflow::{
-        chunks, config::Config, digest, finish_stages, layout::Layout, process::affinity_mask,
-        RunClock,
+        chunks, config::Config, finish_stages, layout::Layout, process::affinity_mask, RunClock,
     },
 };
 use anyhow::{bail, Context, Result};
@@ -377,13 +376,7 @@ fn run_finish(plan: &Plan, layout: &Layout, c: &mut Config) -> Result<()> {
     write_initial_events(plan, layout, &index, &done)?;
     let offset = now_ms()?.saturating_sub(plan.submitted_ms);
     let started = RunClock::with_offset(Duration::from_millis(offset));
-    if let Some(digest_config) = &c.digest {
-        crate::workflow::log(&layout.logs(), "digest_start", started)?;
-        let bed = plan.work.join("restriction-fragments.bed");
-        digest::digest(digest_config, &c.chromsizes, &bed)?;
-        c.fragments = Some(bed);
-        crate::workflow::log(&layout.logs(), "digest_done", started)?;
-    }
+    crate::workflow::digest_stage(c, layout, &plan.work, started)?;
     let mapped: Vec<_> = (0..plan.chunks)
         .map(|i| chunk_dir(plan, i).join(format!("align-{i:04}/alignments.pairs")))
         .collect();
