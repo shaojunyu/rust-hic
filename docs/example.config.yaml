@@ -9,9 +9,9 @@ chromsizes: hg38.chrom.sizes
 # Optional: enable same-fragment filtering using an existing BED.
 # Leave both `fragments` and `digest` unset to skip restriction filtering.
 # fragments: hg38.Arima.bed
-# Alternatively, generate an Arima digest from FASTA (not both options):
+# Alternatively, generate a restriction digest from FASTA (not both options):
 # digest:
-#   enzyme: Arima
+#   enzyme: Arima  # Or a name such as HindIII, or a cocktail like MboI-HinfI.
 #   reference: hg38.fa
 
 # Choose exactly one input: this FASTQ block OR `input_pairs` below.

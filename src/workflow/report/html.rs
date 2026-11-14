@@ -17,6 +17,18 @@ fn escape(s: &str) -> String {
     out
 }
 
+fn restriction_label(restriction: &super::Restriction) -> String {
+    match restriction.mode {
+        "digest" => match &restriction.enzyme {
+            Some(enzyme) => format!("In-silico digest ({enzyme})"),
+            None => "In-silico digest".into(),
+        },
+        "arima_digest" => "Arima digest".into(),
+        "bed" => "Provided fragment BED".into(),
+        _ => "Disabled".into(),
+    }
+}
+
 fn number(n: u64) -> String {
     let raw = n.to_string();
     let mut result = String::with_capacity(raw.len() + raw.len() / 3);
@@ -281,11 +293,7 @@ pub(super) fn render(r: &Report) -> String {
     }
     let _ = write!(out, "</div><p class=\"footnote\">Total: {}. Alignment and chunk preparation overlap; their durations must not be added together. Total is measured up to report generation.</p></section>", duration(r.elapsed_seconds));
     out.push_str("<section class=\"panel\"><div class=\"section-heading\"><div><div class=\"kicker dark\">05 / RUN DETAILS</div><h2>Inputs and settings</h2></div><p>Paths and options used by this run.</p></div><dl class=\"details\">");
-    let restriction = match r.restriction.mode {
-        "arima_digest" => "Arima digest",
-        "bed" => "Provided fragment BED",
-        _ => "Disabled",
-    };
+    let restriction = restriction_label(&r.restriction);
     let entries = [
         ("Assembly", r.assembly.clone()),
         (
@@ -295,7 +303,7 @@ pub(super) fn render(r: &Report) -> String {
                 .clone()
                 .unwrap_or_else(|| "Not applicable".into()),
         ),
-        ("Restriction filtering", restriction.into()),
+        ("Restriction filtering", restriction),
         (
             "Deduplication max mismatch",
             format!("{} bp", r.dedup_max_mismatch),
@@ -375,9 +383,28 @@ pub(super) fn render(r: &Report) -> String {
 #[cfg(test)]
 mod tests {
     use super::escape;
+    use super::restriction_label;
 
     #[test]
     fn escapes_user_controlled_html() {
         assert_eq!(escape("<&>\"'"), "&lt;&amp;&gt;&quot;&#39;");
+    }
+
+    #[test]
+    fn restriction_label_reflects_configured_enzyme() {
+        let label = |mode: &'static str, enzyme: Option<&str>| {
+            restriction_label(&super::super::Restriction {
+                mode,
+                enzyme: enzyme.map(str::to_owned),
+                source: None,
+                stats: None,
+            })
+        };
+        assert_eq!(label("digest", Some("MboI")), "In-silico digest (MboI)");
+        assert_eq!(label("digest", Some("Arima")), "In-silico digest (Arima)");
+        assert_eq!(label("digest", None), "In-silico digest");
+        assert_eq!(label("arima_digest", None), "Arima digest");
+        assert_eq!(label("bed", None), "Provided fragment BED");
+        assert_eq!(label("disabled", None), "Disabled");
     }
 }
